@@ -125,6 +125,7 @@
   <div><span class="label">BLEND </span><span id="blendT" class="lerp">0.00</span></div>
   <div><span class="label">LAYER </span><span id="layercount" class="val">7</span></div>
   <div><span class="label">LEVEL </span><span id="levelseed" class="seed">42</span></div>
+  <div><span class="label">ENT </span><span id="entcount" class="val">0</span></div>
 </div>
 
 <canvas id="game"></canvas>
@@ -308,7 +309,159 @@ const state = {
   frameA: null, frameB: null,
   seedIdxA: 0, seedIdxB: 1,
   globalT: 0,
+  // Entities
+  entities: [],
 };
+
+// ── LISSAJOUS ENTITIES ───────────────────────
+// Each entity follows x(t)=A*sin(a*t+δ), y(t)=B*sin(b*t)
+// anchored to a world-X position that scrolls with the camera.
+// Seed determines the curve shape, size, speed, and color.
+
+class LissajousEntity {
+  constructor(worldX, seed) {
+    const rng = new SeededRNG(seed);
+    this.worldX = worldX;           // Anchor point in world space
+    this.seed = seed;
+
+    // Lissajous parameters from seed
+    // a:b ratio determines the curve shape
+    const ratios = [
+      [1, 1],   // circle / ellipse
+      [1, 2],   // figure-8
+      [2, 3],   // trefoil / clover
+      [3, 2],   // inverted trefoil
+      [3, 4],   // complex knot
+      [1, 3],   // pretzel
+      [2, 5],   // 5-lobe
+      [4, 3],   // tight weave
+    ];
+    const ratio = ratios[rng.int(0, ratios.length)];
+    this.a = ratio[0];
+    this.b = ratio[1];
+
+    this.A = rng.range(20, 50);      // X amplitude (pixels)
+    this.B = rng.range(15, 40);      // Y amplitude
+    this.delta = rng.range(0, Math.PI * 2); // Phase shift
+    this.speed = rng.range(0.8, 2.5);      // Curve traversal speed
+    this.baseY = rng.range(0.2, 0.7);      // Vertical anchor (fraction of screen)
+
+    // Visual properties from seed
+    this.size = rng.range(3, 7);
+    this.hue = rng.range(0, 360);
+    this.type = rng.int(0, 4);       // Visual style variant
+
+    // Trail history
+    this.trail = [];
+    this.maxTrail = 12;
+  }
+
+  // Get screen position at a given time
+  getPosition(time, cameraX) {
+    const screenX = (this.worldX - cameraX) + this.A * Math.sin(this.a * time * this.speed + this.delta);
+    const screenY = CFG.INTERNAL_H * this.baseY + this.B * Math.sin(this.b * time * this.speed);
+    return { x: screenX, y: screenY };
+  }
+
+  update(time, cameraX) {
+    const pos = this.getPosition(time, cameraX);
+    this.trail.unshift(pos);
+    if (this.trail.length > this.maxTrail) this.trail.pop();
+  }
+
+  draw(ctx, time) {
+    if (this.trail.length === 0) return;
+    const pos = this.trail[0];
+    const W = CFG.INTERNAL_W;
+
+    // Skip if off-screen (with margin for the curve amplitude)
+    if (pos.x < -60 || pos.x > W + 60) return;
+
+    ctx.save();
+
+    // Draw trail
+    for (let i = this.trail.length - 1; i >= 1; i--) {
+      const t = this.trail[i];
+      if (t.x < -60 || t.x > W + 60) continue;
+      ctx.globalAlpha = (1 - i / this.trail.length) * 0.3;
+      ctx.fillStyle = `hsl(${this.hue}, 80%, 60%)`;
+      const s = this.size * (1 - i / this.trail.length) * 0.5;
+      ctx.fillRect(Math.round(t.x) - s/2, Math.round(t.y) - s/2, s, s);
+    }
+
+    // Draw entity body
+    ctx.globalAlpha = 0.9;
+    const pulse = 0.8 + 0.2 * Math.sin(time * 4 + this.seed);
+
+    if (this.type === 0) {
+      // Diamond
+      ctx.fillStyle = `hsl(${this.hue}, 90%, 65%)`;
+      ctx.translate(pos.x, pos.y);
+      ctx.rotate(time * this.speed * 0.5);
+      const s = this.size * pulse;
+      ctx.beginPath();
+      ctx.moveTo(0, -s); ctx.lineTo(s, 0); ctx.lineTo(0, s); ctx.lineTo(-s, 0);
+      ctx.closePath();
+      ctx.fill();
+    } else if (this.type === 1) {
+      // Circle with ring
+      ctx.fillStyle = `hsl(${this.hue}, 85%, 55%)`;
+      ctx.beginPath();
+      ctx.arc(pos.x, pos.y, this.size * pulse * 0.7, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = `hsl(${(this.hue + 60) % 360}, 90%, 70%)`;
+      ctx.lineWidth = 0.5;
+      ctx.globalAlpha = 0.5;
+      ctx.beginPath();
+      ctx.arc(pos.x, pos.y, this.size * pulse * 1.2, 0, Math.PI * 2);
+      ctx.stroke();
+    } else if (this.type === 2) {
+      // Triangle
+      ctx.fillStyle = `hsl(${this.hue}, 80%, 60%)`;
+      ctx.translate(pos.x, pos.y);
+      ctx.rotate(-time * this.speed * 0.3);
+      const s = this.size * pulse;
+      ctx.beginPath();
+      ctx.moveTo(0, -s * 1.2); ctx.lineTo(s, s * 0.6); ctx.lineTo(-s, s * 0.6);
+      ctx.closePath();
+      ctx.fill();
+    } else {
+      // Cross / star burst
+      ctx.fillStyle = `hsl(${this.hue}, 95%, 70%)`;
+      const s = this.size * pulse;
+      ctx.fillRect(pos.x - s, pos.y - 1, s * 2, 2);
+      ctx.fillRect(pos.x - 1, pos.y - s, 2, s * 2);
+      ctx.globalAlpha = 0.4;
+      ctx.fillRect(pos.x - s * 0.7, pos.y - s * 0.7, s * 1.4, s * 1.4);
+    }
+
+    // Glow
+    ctx.globalAlpha = 0.15 + 0.1 * Math.sin(time * 3);
+    ctx.fillStyle = `hsl(${this.hue}, 100%, 80%)`;
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, this.size * 2, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+}
+
+// Spawn entities along the world — seeded deterministically
+function spawnEntities() {
+  const rng = new SeededRNG(CFG.LEVEL_SEED * 31337);
+  const entities = [];
+  const SPAWN_RANGE = 20000;  // World units of pre-spawned entities
+  const DENSITY = 80;         // Average spacing between entities
+
+  let worldX = 200; // Start a bit ahead of the player
+  while (worldX < SPAWN_RANGE) {
+    const gap = DENSITY + rng.range(-30, 60);
+    worldX += gap;
+    const entitySeed = rng.int(0, 1000000);
+    entities.push(new LissajousEntity(worldX, entitySeed));
+  }
+  return entities;
+}
 
 function seedForWaypoint(idx) { return 42 + idx * 7; }
 
@@ -318,6 +471,7 @@ function initEngine() {
   state.frameA = new SeedFrame(seedForWaypoint(0));
   state.frameB = new SeedFrame(seedForWaypoint(1));
   state.globalT = 0;
+  state.entities = spawnEntities();
 }
 
 // ── INTERPOLATED ACCESSORS ───────────────────
@@ -738,6 +892,11 @@ function update(dt) {
   }
 
   state.globalT = rawT;
+
+  // Update entities
+  for (const e of state.entities) {
+    e.update(state.time, state.cameraX);
+  }
 }
 
 // ── RENDER ───────────────────────────────────
@@ -788,6 +947,11 @@ function render() {
     ctx.restore();
   }
 
+  // Draw entities (between terrain and ship)
+  for (const e of state.entities) {
+    e.draw(ctx, state.time);
+  }
+
   drawShip();
 
   // HUD
@@ -802,6 +966,12 @@ function render() {
     document.getElementById('seedA').textContent = seedForWaypoint(state.seedIdxA).toString(16).padStart(4, '0');
     document.getElementById('seedB').textContent = seedForWaypoint(state.seedIdxB).toString(16).padStart(4, '0');
     document.getElementById('blendT').textContent = state.globalT.toFixed(3);
+    // Count visible entities
+    const visible = state.entities.filter(e => {
+      const p = e.trail[0];
+      return p && p.x > -60 && p.x < CFG.INTERNAL_W + 60;
+    }).length;
+    document.getElementById('entcount').textContent = `${visible}/${state.entities.length}`;
   }
 }
 
