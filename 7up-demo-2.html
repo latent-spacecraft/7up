@@ -1157,9 +1157,32 @@ document.addEventListener('keydown', (e) => {
 });
 document.addEventListener('keyup', (e) => { state.keys[e.key] = false; });
 
-// Allow level seed from URL hash: 7up-demo-2.html#seed=123
-const hashSeed = location.hash.match(/seed=(\d+)/);
-if (hashSeed) CFG.LEVEL_SEED = parseInt(hashSeed[1]);
+// Load level from URL hash:
+//   #seed=123          — just a seed, use defaults
+//   #level={...json}   — full .7up level file from Studio
+const hashLevel = location.hash.match(/level=(.+)/);
+const hashSeed = location.hash.match(/^#seed=(\d+)$/);
+if (hashLevel) {
+  try {
+    const level = JSON.parse(decodeURIComponent(hashLevel[1]));
+    CFG.LEVEL_SEED = level.seed || 42;
+    if (level.sdxl) {
+      CFG.GENAI_STEPS = level.sdxl.steps || 2;
+      CFG.GENAI_CFG = level.sdxl.cfg || 1.0;
+      CFG.GENAI_SCHEDULER = level.sdxl.scheduler || 'eulerAncestral';
+    }
+    if (level.terrain) {
+      CFG.SEED_PERIOD = level.terrain.seed_period || 2000;
+      state.baseSpeed = level.terrain.base_speed || 1.2;
+    }
+    if (level.layers) {
+      level.layers.forEach((l, i) => { if (i < genai.LAYER_PROMPTS.length) genai.LAYER_PROMPTS[i] = l.prompt; });
+    }
+    console.log(`[Level] Loaded "${level.name || 'Untitled'}" by ${level.author || 'unknown'} (seed ${CFG.LEVEL_SEED})`);
+  } catch (e) { console.warn('[Level] Failed to parse URL level:', e.message); }
+} else if (hashSeed) {
+  CFG.LEVEL_SEED = parseInt(hashSeed[1]);
+}
 document.getElementById('levelseed').textContent = CFG.LEVEL_SEED;
 
 initEngine();
