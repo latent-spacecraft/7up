@@ -6,7 +6,7 @@ A sprite-based 2D game engine built around a seven-layer compositor with real-ti
 
 ## Demo
 
-Open `7up-demo-2.html` in a browser. The engine runs standalone with procedural generation. When the SDXL server is running, AI-generated textures are composited into the terrain.
+Open `7up-demo-2.html` in a browser. The engine runs standalone with procedural generation. When the SDXL server is running, AI-generated textures fill the terrain and enemy starfighters populate the world.
 
 **Share levels by seed:** `7up-demo-2.html#seed=42`
 
@@ -14,14 +14,15 @@ Open `7up-demo-2.html` in a browser. The engine runs standalone with procedural 
 
 ```
 Browser (Canvas2D)                Swift Server (localhost:8090)
-┌──────────────────────┐          ┌──────────────────────────┐
-│ 7UP Engine           │   HTTP   │ SDXL Turbo               │
-│ ├─ 7-layer parallax  │◄────────►│ ├─ Core ML (int8, 3.4GB) │
-│ ├─ Procedural gen    │ /generate│ ├─ Metal / ANE compute   │
-│ ├─ Noise terrain     │  → PNG   │ ├─ Euler Ancestral sched │
-│ ├─ AI texture fill   │          │ └─ Hummingbird HTTP      │
-│ └─ Seed-based levels │          └──────────────────────────┘
-└──────────────────────┘
+┌──────────────────────┐          ┌──────────────────────────────┐
+│ 7UP Engine           │   HTTP   │ SDXL Turbo                   │
+│ ├─ 7-layer parallax  │◄────────►│ ├─ Core ML (int8, 3.4GB)     │
+│ ├─ Procedural gen    │ /generate│ ├─ Metal / ANE compute       │
+│ ├─ AI terrain fill   │  → PNG   │ ├─ Euler Ancestral scheduler │
+│ ├─ Lissajous enemies │          │ ├─ Vision instance segment.  │
+│ ├─ AI sprite extract │ /sprites │ │   └─ Per-object alpha mask  │
+│ └─ Seed-based levels │  → JSON  │ └─ Hummingbird HTTP          │
+└──────────────────────┘          └──────────────────────────────┘
 Engine works without server (graceful degradation)
 ```
 
@@ -33,7 +34,7 @@ Engine works without server (graceful degradation)
 | 1 | Nebula | 0.06 | Nebula clouds | Screen-blended atmospheric |
 | 2 | Far Terrain | 0.12 | Rock cliff fill | Clipped to terrain silhouette |
 | 3 | Mid Terrain | 0.25 | Crystal formations | Clipped to terrain silhouette |
-| 4 | Structures | 0.40 | Procedural only | Buildings, spires |
+| 4 | Structures | 0.40 | Procedural | Buildings, spires |
 | 5 | Near Terrain | 0.65 | Mossy rock fill | Clipped to terrain silhouette |
 | 6 | Foreground | 0.90 | Ground texture | Clipped to terrain silhouette |
 
@@ -41,7 +42,35 @@ Engine works without server (graceful degradation)
 
 - **Latent Parallax**: Each layer evolves through latent space at its own rate. Deep space barely changes while foreground morphs readily.
 - **Dual-World Crossfade**: Two complete seed states maintained simultaneously with quintic smoothstep interpolation.
-- **Seed-as-Level**: A single seed number deterministically generates all 7 AI textures + procedural terrain. Share the seed, share the world.
+- **Seed-as-Level**: A single seed number deterministically generates all 7 AI textures, procedural terrain, and entity placement. Share the seed, share the world.
+
+### Entities
+
+Enemies follow **Lissajous curves** — parametric paths that produce circles, figure-8s, trefoils, and complex knots from simple sine functions:
+
+```
+x(t) = A · sin(a · t + δ)
+y(t) = B · sin(b · t)
+```
+
+Each entity's curve parameters are derived from its seed. Sprite size drives a **mass/momentum simulation**: large ships carve wide lazy arcs with long engine trails, while small interceptors zip through tight aggressive patterns.
+
+| Ship Size | Amplitude | Speed | Trail | Behavior |
+|-----------|-----------|-------|-------|----------|
+| 12px (interceptor) | 15-30px | 1.8-3.0x | 6 frames | Tight, aggressive |
+| 24px (fighter) | 33-48px | 1.0-2.2x | 12 frames | Balanced |
+| 36px (capital) | 50-65px | 0.3-1.5x | 18 frames | Wide, sweeping |
+
+### AI Sprite Pipeline
+
+Enemy sprites are generated and isolated automatically:
+
+1. **SDXL Turbo** generates a 512×512 image of multiple starfighters
+2. **Apple Vision** (`VNGenerateForegroundInstanceMaskRequest`) isolates each individual ship — the same tech behind "Copy Subject" in Messages
+3. Each instance gets its own **alpha mask**, **bounding box crop**, and **RGBA PNG**
+4. Sprites are assigned to Lissajous entities and **rotated to match heading**
+
+One generation (~4s) produces 8-12 unique sprites with clean transparent edges.
 
 ## Quick Start
 
@@ -53,7 +82,7 @@ python3 -m http.server 8080
 open http://localhost:8080/7up-demo-2.html
 ```
 
-### 2. With AI Textures
+### 2. With AI Textures + Sprites
 
 ```bash
 # Download Core ML models from HuggingFace
@@ -73,21 +102,51 @@ open http://localhost:8080/7up-demo-2.html
 
 ### 3. SDXL Turbo Studio
 
-Visual parameter tuning for the SDXL pipeline:
+Visual parameter tuning UI:
 
 ```bash
 open http://localhost:8080/demo/sdxl-turbo.html
 ```
 
-## SDXL Turbo Settings
+## Server API
 
-Tuned for quality/speed on Apple Silicon:
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Server status |
+| `/generate` | POST | Generate image (returns PNG, optionally RGBA with `remove_background`) |
+| `/generate-sprites` | POST | Generate + Vision instance segmentation → JSON array of cropped RGBA sprites |
+
+### POST /generate-sprites
+
+```json
+{
+  "prompt": "pixel art enemy starfighters, solid black background",
+  "seed": 42,
+  "steps": 2,
+  "guidance_scale": 1.0,
+  "scheduler": "eulerAncestral"
+}
+```
+
+Returns:
+```json
+{
+  "count": 10,
+  "elapsed": 4.66,
+  "sprites": [
+    { "png": "<base64>", "x": 0, "y": 104, "width": 117, "height": 189 },
+    ...
+  ]
+}
+```
+
+## SDXL Turbo Settings
 
 | Parameter | Value |
 |-----------|-------|
 | Steps | 2 |
 | CFG Scale | 1.0 |
-| Scheduler | Euler Ancestral |
+| Scheduler | Euler Ancestral (custom, added to ml-stable-diffusion fork) |
 | Resolution | 512×512 |
 | Quantization | int8 palettization |
 | Model size | 3.4 GB |
@@ -97,30 +156,31 @@ Tuned for quality/speed on Apple Silicon:
 
 ```
 7up/
-├── 7up-demo-2.html          # Main engine demo (v0.3)
-├── 7UP-ENGINE.md             # Architecture deep-dive
+├── 7up-demo-2.html              # Main engine demo
+├── 7UP-ENGINE.md                 # Architecture deep-dive
 ├── README.md
 ├── .gitignore
 ├── demo/
-│   └── sdxl-turbo.html       # SDXL Turbo Studio (parameter tuning UI)
+│   └── sdxl-turbo.html           # SDXL Turbo Studio (parameter tuning UI)
 ├── tools/
-│   ├── serve.py              # Dev server (COOP/COEP headers)
-│   ├── export_onnx.py        # SDXL → ONNX (reference, not used in prod)
-│   ├── convert_coreml.py     # SDXL → Core ML (reference)
-│   └── convert_fp16.py       # ONNX fp16 conversion (reference)
-├── 7up-server/               # Swift SDXL Turbo server
+│   ├── serve.py                  # Dev server (COOP/COEP headers)
+│   ├── export_onnx.py            # SDXL → ONNX (reference)
+│   ├── convert_coreml.py         # SDXL → Core ML (reference)
+│   └── convert_fp16.py           # ONNX fp16 conversion (reference)
+├── 7up-server/                   # Swift SDXL Turbo server
 │   ├── Package.swift
 │   └── Sources/
-│       ├── main.swift         # Hummingbird HTTP routes
-│       ├── ImageGenerator.swift # Core ML pipeline wrapper
+│       ├── main.swift            # Hummingbird HTTP routes
+│       ├── ImageGenerator.swift  # Core ML pipeline + Vision sprite extraction
 │       └── CORSMiddleware.swift
-└── ml-stable-diffusion/      # Local fork of Apple's library
-    └── (added EulerAncestralDiscreteScheduler)
+└── ml-stable-diffusion/          # Fork of Apple's library (submodule)
+    └── swift/StableDiffusion/pipeline/
+        └── EulerAncestralDiscreteScheduler.swift  # Added
 ```
 
 ## Models
 
-Core ML models (int8 quantized) are hosted on HuggingFace:
+Core ML models (int8 quantized) hosted on HuggingFace:
 
 **[latentspacecraft/sdxl-turbo-coreml](https://huggingface.co/latentspacecraft/sdxl-turbo-coreml)**
 

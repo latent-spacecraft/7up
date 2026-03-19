@@ -316,47 +316,42 @@ const state = {
 // ── LISSAJOUS ENTITIES ───────────────────────
 // Each entity follows x(t)=A*sin(a*t+δ), y(t)=B*sin(b*t)
 // anchored to a world-X position that scrolls with the camera.
-// Seed determines the curve shape, size, speed, and color.
+// Seed determines curve shape. AI sprite assigned from sprite pool.
 
 class LissajousEntity {
-  constructor(worldX, seed) {
+  constructor(worldX, seed, spriteIdx) {
     const rng = new SeededRNG(seed);
-    this.worldX = worldX;           // Anchor point in world space
+    this.worldX = worldX;
     this.seed = seed;
+    this.spriteIdx = spriteIdx; // Index into the shared sprite pool
 
-    // Lissajous parameters from seed
-    // a:b ratio determines the curve shape
+    // Size first — everything else scales from it
+    this.drawSize = rng.range(12, 36);
+    // mass: 0 (tiny) → 1 (huge), used to scale dynamics
+    const mass = (this.drawSize - 12) / 24;
+
+    // Lissajous parameters — scaled by mass
     const ratios = [
-      [1, 1],   // circle / ellipse
-      [1, 2],   // figure-8
-      [2, 3],   // trefoil / clover
-      [3, 2],   // inverted trefoil
-      [3, 4],   // complex knot
-      [1, 3],   // pretzel
-      [2, 5],   // 5-lobe
-      [4, 3],   // tight weave
+      [1, 1], [1, 2], [2, 3], [3, 2],
+      [3, 4], [1, 3], [2, 5], [4, 3],
     ];
     const ratio = ratios[rng.int(0, ratios.length)];
     this.a = ratio[0];
     this.b = ratio[1];
-
-    this.A = rng.range(20, 50);      // X amplitude (pixels)
-    this.B = rng.range(15, 40);      // Y amplitude
-    this.delta = rng.range(0, Math.PI * 2); // Phase shift
-    this.speed = rng.range(0.8, 2.5);      // Curve traversal speed
-    this.baseY = rng.range(0.2, 0.7);      // Vertical anchor (fraction of screen)
-
-    // Visual properties from seed
-    this.size = rng.range(3, 7);
+    // Big ships: wide lazy orbits. Small ships: tight aggressive patterns.
+    this.A = rng.range(15, 30) + mass * 35;          // 15-30 → 50-65
+    this.B = rng.range(10, 25) + mass * 25;           // 10-25 → 35-50
+    this.delta = rng.range(0, Math.PI * 2);
+    this.speed = rng.range(1.8, 3.0) - mass * 1.5;   // small=fast(1.8-3.0), big=slow(0.3-1.5)
+    this.baseY = rng.range(0.2, 0.7);
     this.hue = rng.range(0, 360);
-    this.type = rng.int(0, 4);       // Visual style variant
 
-    // Trail history
+    // Trail — longer for big ships (more momentum = more wake)
     this.trail = [];
-    this.maxTrail = 12;
+    this.maxTrail = Math.round(6 + mass * 12); // 6 (tiny) → 18 (huge)
+    this.prevPos = null;
   }
 
-  // Get screen position at a given time
   getPosition(time, cameraX) {
     const screenX = (this.worldX - cameraX) + this.A * Math.sin(this.a * time * this.speed + this.delta);
     const screenY = CFG.INTERNAL_H * this.baseY + this.B * Math.sin(this.b * time * this.speed);
@@ -364,6 +359,7 @@ class LissajousEntity {
   }
 
   update(time, cameraX) {
+    this.prevPos = this.trail[0] || null;
     const pos = this.getPosition(time, cameraX);
     this.trail.unshift(pos);
     if (this.trail.length > this.maxTrail) this.trail.pop();
@@ -373,76 +369,113 @@ class LissajousEntity {
     if (this.trail.length === 0) return;
     const pos = this.trail[0];
     const W = CFG.INTERNAL_W;
-
-    // Skip if off-screen (with margin for the curve amplitude)
-    if (pos.x < -60 || pos.x > W + 60) return;
+    if (pos.x < -80 || pos.x > W + 80) return;
 
     ctx.save();
 
-    // Draw trail
+    // Compute heading angle from movement direction
+    let angle = Math.PI; // Default: facing left (toward player)
+    if (this.prevPos) {
+      const dx = pos.x - this.prevPos.x;
+      const dy = pos.y - this.prevPos.y;
+      if (Math.abs(dx) > 0.1 || Math.abs(dy) > 0.1) {
+        angle = Math.atan2(dy, dx);
+      }
+    }
+
+    // Draw engine trail
+    ctx.globalAlpha = 0.4;
     for (let i = this.trail.length - 1; i >= 1; i--) {
       const t = this.trail[i];
-      if (t.x < -60 || t.x > W + 60) continue;
-      ctx.globalAlpha = (1 - i / this.trail.length) * 0.3;
-      ctx.fillStyle = `hsl(${this.hue}, 80%, 60%)`;
-      const s = this.size * (1 - i / this.trail.length) * 0.5;
-      ctx.fillRect(Math.round(t.x) - s/2, Math.round(t.y) - s/2, s, s);
+      if (t.x < -80 || t.x > W + 80) continue;
+      const fade = 1 - i / this.trail.length;
+      ctx.globalAlpha = fade * 0.25;
+      ctx.fillStyle = `hsl(${this.hue}, 90%, 70%)`;
+      const s = this.drawSize * fade * 0.2;
+      ctx.fillRect(t.x - s/2, t.y - s/2, s, s);
     }
 
-    // Draw entity body
-    ctx.globalAlpha = 0.9;
-    const pulse = 0.8 + 0.2 * Math.sin(time * 4 + this.seed);
+    // Draw sprite or fallback
+    // Map sprite index to available pool (wraps around)
+    const poolSize = entitySprites.size || 1;
+    const sprite = entitySprites.get(this.spriteIdx % poolSize);
+    const s = this.drawSize;
+    ctx.globalAlpha = 1;
 
-    if (this.type === 0) {
-      // Diamond
-      ctx.fillStyle = `hsl(${this.hue}, 90%, 65%)`;
-      ctx.translate(pos.x, pos.y);
-      ctx.rotate(time * this.speed * 0.5);
-      const s = this.size * pulse;
-      ctx.beginPath();
-      ctx.moveTo(0, -s); ctx.lineTo(s, 0); ctx.lineTo(0, s); ctx.lineTo(-s, 0);
-      ctx.closePath();
-      ctx.fill();
-    } else if (this.type === 1) {
-      // Circle with ring
-      ctx.fillStyle = `hsl(${this.hue}, 85%, 55%)`;
-      ctx.beginPath();
-      ctx.arc(pos.x, pos.y, this.size * pulse * 0.7, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = `hsl(${(this.hue + 60) % 360}, 90%, 70%)`;
-      ctx.lineWidth = 0.5;
-      ctx.globalAlpha = 0.5;
-      ctx.beginPath();
-      ctx.arc(pos.x, pos.y, this.size * pulse * 1.2, 0, Math.PI * 2);
-      ctx.stroke();
-    } else if (this.type === 2) {
-      // Triangle
-      ctx.fillStyle = `hsl(${this.hue}, 80%, 60%)`;
-      ctx.translate(pos.x, pos.y);
-      ctx.rotate(-time * this.speed * 0.3);
-      const s = this.size * pulse;
-      ctx.beginPath();
-      ctx.moveTo(0, -s * 1.2); ctx.lineTo(s, s * 0.6); ctx.lineTo(-s, s * 0.6);
-      ctx.closePath();
-      ctx.fill();
+    ctx.translate(pos.x, pos.y);
+    ctx.rotate(angle);
+
+    if (sprite) {
+      // Draw AI sprite — centered, rotated to heading
+      ctx.drawImage(sprite, -s/2, -s/2, s, s);
     } else {
-      // Cross / star burst
-      ctx.fillStyle = `hsl(${this.hue}, 95%, 70%)`;
-      const s = this.size * pulse;
-      ctx.fillRect(pos.x - s, pos.y - 1, s * 2, 2);
-      ctx.fillRect(pos.x - 1, pos.y - s, 2, s * 2);
-      ctx.globalAlpha = 0.4;
-      ctx.fillRect(pos.x - s * 0.7, pos.y - s * 0.7, s * 1.4, s * 1.4);
+      // Fallback: simple arrow shape pointing right (rotation handles direction)
+      const pulse = 0.8 + 0.2 * Math.sin(time * 4 + this.seed);
+      const sz = s * 0.4 * pulse;
+      ctx.fillStyle = `hsl(${this.hue}, 85%, 60%)`;
+      ctx.beginPath();
+      ctx.moveTo(sz, 0);
+      ctx.lineTo(-sz, -sz * 0.6);
+      ctx.lineTo(-sz * 0.5, 0);
+      ctx.lineTo(-sz, sz * 0.6);
+      ctx.closePath();
+      ctx.fill();
+      // Engine glow
+      ctx.fillStyle = `hsl(${(this.hue + 30) % 360}, 100%, 75%)`;
+      ctx.globalAlpha = 0.6 + 0.3 * Math.sin(time * 8);
+      ctx.fillRect(-sz - 2, -2, 4, 4);
     }
-
-    // Glow
-    ctx.globalAlpha = 0.15 + 0.1 * Math.sin(time * 3);
-    ctx.fillStyle = `hsl(${this.hue}, 100%, 80%)`;
-    ctx.beginPath();
-    ctx.arc(pos.x, pos.y, this.size * 2, 0, Math.PI * 2);
-    ctx.fill();
 
     ctx.restore();
+  }
+}
+
+// ── SPRITE POOL ──────────────────────────────
+// AI-generated sprites shared across entities.
+// Loaded once at level start from /generate-sprites.
+const entitySprites = new Map(); // spriteIdx → ImageBitmap
+let spritesLoaded = false;
+
+async function loadEntitySprites() {
+  if (!genai.available) return;
+
+  const prompt = 'pixel art enemy starfighter sprites, various alien spaceships facing left, ' +
+    'side view, sci-fi fighters, glowing engines, detailed, solid black background, spaced apart';
+
+  console.log('[Sprites] Requesting enemy starfighter sprites...');
+  try {
+    const r = await fetch(`${CFG.GENAI_SERVER}/generate-sprites`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt,
+        seed: CFG.LEVEL_SEED * 777,
+        steps: CFG.GENAI_STEPS,
+        guidance_scale: CFG.GENAI_CFG,
+        scheduler: CFG.GENAI_SCHEDULER,
+      }),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+
+    console.log(`[Sprites] Received ${data.count} sprites in ${data.elapsed.toFixed(2)}s`);
+
+    // Convert base64 PNGs to ImageBitmaps
+    for (let i = 0; i < data.sprites.length; i++) {
+      const s = data.sprites[i];
+      // Skip very small fragments
+      if (s.width < 20 || s.height < 20) continue;
+      const bytes = Uint8Array.from(atob(s.png), c => c.charCodeAt(0));
+      const blob = new Blob([bytes], { type: 'image/png' });
+      const img = await createImageBitmap(blob);
+      entitySprites.set(entitySprites.size, img);
+      console.log(`[Sprites] ✓ sprite ${entitySprites.size - 1}: ${s.width}x${s.height}`);
+    }
+
+    spritesLoaded = true;
+    console.log(`[Sprites] ✓ ${entitySprites.size} sprites ready`);
+  } catch (e) {
+    console.warn('[Sprites] Failed to load:', e.message);
   }
 }
 
@@ -450,15 +483,17 @@ class LissajousEntity {
 function spawnEntities() {
   const rng = new SeededRNG(CFG.LEVEL_SEED * 31337);
   const entities = [];
-  const SPAWN_RANGE = 20000;  // World units of pre-spawned entities
-  const DENSITY = 80;         // Average spacing between entities
+  const SPAWN_RANGE = 20000;
+  const DENSITY = 80;
 
-  let worldX = 200; // Start a bit ahead of the player
+  let worldX = 200;
   while (worldX < SPAWN_RANGE) {
     const gap = DENSITY + rng.range(-30, 60);
     worldX += gap;
     const entitySeed = rng.int(0, 1000000);
-    entities.push(new LissajousEntity(worldX, entitySeed));
+    // Assign a sprite index (wraps around available sprites)
+    const spriteIdx = rng.int(0, 20); // Will map to actual sprites once loaded
+    entities.push(new LissajousEntity(worldX, entitySeed, spriteIdx % Math.max(1, entitySprites.size || 10)));
   }
   return entities;
 }
@@ -763,6 +798,8 @@ const genai = {
         console.log(`[GenAI] Server connected — generating level textures for seed ${CFG.LEVEL_SEED}`);
         document.getElementById('layercount').textContent = '7+AI';
         this.generateLevel(CFG.LEVEL_SEED);
+        // Load enemy starfighter sprites
+        loadEntitySprites();
       }
     } catch { /* server not running — procedural fallback */ }
   },

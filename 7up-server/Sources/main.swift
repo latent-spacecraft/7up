@@ -26,6 +26,7 @@ struct GenerateRequest: Decodable, Sendable {
     var steps: Int?
     var guidance_scale: Float?
     var scheduler: String?
+    var remove_background: Bool?
 }
 
 struct HealthResponse: Encodable, Sendable {
@@ -111,7 +112,8 @@ router.post("generate") { request, _ -> Response in
         height: payload.height ?? 512,
         steps: payload.steps ?? 1,
         guidanceScale: payload.guidance_scale ?? 0.0,
-        schedulerName: payload.scheduler ?? "dpmSolverMultistep"
+        schedulerName: payload.scheduler ?? "dpmSolverMultistep",
+        removeBackground: payload.remove_background ?? false
     )
 
     logger.info("Generating: \"\(genRequest.prompt)\" seed=\(genRequest.seed) \(genRequest.width)x\(genRequest.height)")
@@ -135,6 +137,85 @@ router.post("generate") { request, _ -> Response in
         status: .ok,
         headers: [.contentType: "image/png"],
         body: .init(byteBuffer: .init(data: result.pngData))
+    )
+}
+
+// POST /generate-sprites — generates image then extracts individual objects as separate RGBA PNGs
+router.post("generate-sprites") { request, _ -> Response in
+    guard let gen = generator else {
+        let body = try JSONEncoder().encode(ErrorBody(error: "Model not loaded."))
+        return Response(status: .serviceUnavailable, headers: [.contentType: "application/json"],
+                        body: .init(byteBuffer: .init(data: body)))
+    }
+
+    let payload: GenerateRequest
+    do {
+        let collected = try await request.body.collect(upTo: 1_048_576)
+        payload = try JSONDecoder().decode(GenerateRequest.self, from: collected)
+    } catch {
+        let body = try JSONEncoder().encode(ErrorBody(error: "Invalid JSON: \(error)"))
+        return Response(status: .badRequest, headers: [.contentType: "application/json"],
+                        body: .init(byteBuffer: .init(data: body)))
+    }
+
+    let genRequest = ImageGenerator.Request(
+        prompt: payload.prompt,
+        negativePrompt: payload.negative_prompt ?? "",
+        seed: payload.seed ?? UInt32.random(in: 0...UInt32.max),
+        width: payload.width ?? 512,
+        height: payload.height ?? 512,
+        steps: payload.steps ?? 2,
+        guidanceScale: payload.guidance_scale ?? 1.0,
+        schedulerName: payload.scheduler ?? "eulerAncestral",
+        removeBackground: false
+    )
+
+    logger.info("Generating sprites: \"\(genRequest.prompt.prefix(50))\" seed=\(genRequest.seed)")
+
+    let result: ImageGenerator.SpritesResult
+    do {
+        result = try await gen.generateSprites(genRequest)
+    } catch {
+        logger.error("Sprite generation failed: \(error)")
+        let body = try JSONEncoder().encode(ErrorBody(error: "Failed: \(error)"))
+        return Response(status: .internalServerError, headers: [.contentType: "application/json"],
+                        body: .init(byteBuffer: .init(data: body)))
+    }
+
+    // Return JSON with base64-encoded sprites
+    struct SpriteResponse: Encodable {
+        var count: Int
+        var elapsed: Double
+        var sprites: [SpriteEntry]
+    }
+    struct SpriteEntry: Encodable {
+        var png: String     // base64
+        var x: Int
+        var y: Int
+        var width: Int
+        var height: Int
+    }
+
+    let entries = result.sprites.map { sprite in
+        SpriteEntry(
+            png: sprite.pngData.base64EncodedString(),
+            x: sprite.x, y: sprite.y,
+            width: sprite.width, height: sprite.height
+        )
+    }
+    let spriteResponse = SpriteResponse(
+        count: entries.count,
+        elapsed: result.elapsedSeconds,
+        sprites: entries
+    )
+
+    logger.info("Extracted \(entries.count) sprites in \(String(format: "%.2f", result.elapsedSeconds))s")
+
+    let body = try JSONEncoder().encode(spriteResponse)
+    return Response(
+        status: .ok,
+        headers: [.contentType: "application/json"],
+        body: .init(byteBuffer: .init(data: body))
     )
 }
 
