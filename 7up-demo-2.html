@@ -168,7 +168,9 @@ const CFG = {
   GENAI_STEPS: 2,
   GENAI_CFG: 1.0,
   GENAI_SCHEDULER: 'eulerAncestral',
-  LEVEL_SEED: 42,  // The level seed — share this number to share the world
+  LEVEL_SEED: 42,
+  // Per-layer AI texture opacity (0=procedural only, 1=full AI texture)
+  LAYER_OPACITY: [0.6, 0.35, 0.6, 0.6, 0.8, 0.6, 0.6],
 };
 
 // ── SPRITE CACHE (IndexedDB) ─────────────────
@@ -716,7 +718,7 @@ function drawTerrain(offX, layerIdx, yBase, amplitude, detail) {
     ctx.save();
     ctx.clip(path);
     const scrollX = -(offX % W + W) % W;
-    ctx.globalAlpha = 0.6;
+    ctx.globalAlpha = CFG.LAYER_OPACITY[layerIdx];
     ctx.globalCompositeOperation = 'overlay';
     ctx.drawImage(aiTex, scrollX, 0, W, H);
     ctx.drawImage(aiTex, scrollX + W, 0, W, H);
@@ -752,21 +754,30 @@ function drawStructures(offX, layerIdx) {
     if (pAlpha < 0.02) continue;
 
     const spacing = 120;
-    const start = Math.floor((offX - W) / spacing);
-    const end = Math.ceil((offX + W * 2) / spacing);
+    const margin = 100; // Extra margin beyond screen edges for fade-in/out
+    const start = Math.floor((offX - W - margin) / spacing);
+    const end = Math.ceil((offX + W * 2 + margin) / spacing);
 
     for (let si = start; si < end; si++) {
       const srng = new SeededRNG(frame.seed + si * 777);
       const worldX = si * spacing + srng.range(-20, 20);
       const screenX = worldX - offX;
-      if (screenX < -60 || screenX > W + 60) continue;
+      if (screenX < -margin || screenX > W + margin) continue;
+
+      // Fade near edges to prevent pop-in/out
+      let edgeFade = 1;
+      if (screenX < 0) edgeFade = Math.max(0, 1 + screenX / margin);
+      else if (screenX > W) edgeFade = Math.max(0, 1 - (screenX - W) / margin);
 
       const type = srng.int(0, 4);
       const height = srng.range(20, 80);
       const width = srng.range(8, 25);
-      const baseY = H * 0.55 + getLayerNoise(layerIdx, worldX * 0.008, 0.5) * 40;
+      // Fixed ground plane for structures: 5% below layer 6's lowest point.
+      // Layer 6: yBase=0.82*H, amplitude=25 → lowest = yBase - amplitude
+      // Buildings anchor here so they sit behind foreground vegetation.
+      const baseY = (H * 0.82 - 25) + H * 0.05;
 
-      ctx.globalAlpha = 0.8 * pAlpha;
+      ctx.globalAlpha = 0.8 * pAlpha * edgeFade;
 
       if (hasSprites) {
         // AI sprite building — pick from pool based on structure index
@@ -900,7 +911,8 @@ const genai = {
         console.log(`[GenAI] Server connected — generating level textures for seed ${CFG.LEVEL_SEED}`);
         document.getElementById('layercount').textContent = '7+AI';
         this.generateLevel(CFG.LEVEL_SEED);
-        // Load AI sprites — entity fighters and structure buildings
+        // Load AI sprites — player ship, enemy fighters, structure buildings
+        loadPlayerShipSprite();
         loadEntitySprites();
         loadStructureSprites();
       }
@@ -970,7 +982,53 @@ const genai = {
   },
 };
 
-// ── SHIP ─────────────────────────────────────
+// ── PLAYER SHIP ──────────────────────────────
+let playerShipSprite = null;
+
+async function loadPlayerShipSprite() {
+  if (!genai.available) return;
+  try {
+    const cached = await spriteCache.get(`ship-${CFG.LEVEL_SEED}`);
+    if (cached) {
+      const bytes = Uint8Array.from(atob(cached[0]), c => c.charCodeAt(0));
+      const blob = new Blob([bytes], { type: 'image/png' });
+      playerShipSprite = await createImageBitmap(blob);
+      console.log('[Ship] ✓ Player sprite from cache');
+      return;
+    }
+
+    console.log('[Ship] Generating player ship sprite...');
+    const r = await fetch(`${CFG.GENAI_SERVER}/generate-sprites`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: 'single pixel art spaceship facing right, heroic fighter craft, glowing blue engine, sleek design, side view, solid black background, centered, detailed',
+        seed: CFG.LEVEL_SEED * 999,
+        steps: CFG.GENAI_STEPS,
+        guidance_scale: CFG.GENAI_CFG,
+        scheduler: CFG.GENAI_SCHEDULER,
+      }),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+
+    // Pick the best sprite (largest that isn't the full sheet)
+    let best = null;
+    for (const s of data.sprites) {
+      if (s.width > 400 && s.height > 400) continue;
+      if (s.width < 30 || s.height < 30) continue;
+      if (!best || (s.width * s.height > best.width * best.height)) best = s;
+    }
+    if (best) {
+      const bytes = Uint8Array.from(atob(best.png), c => c.charCodeAt(0));
+      const blob = new Blob([bytes], { type: 'image/png' });
+      playerShipSprite = await createImageBitmap(blob);
+      await spriteCache.put(`ship-${CFG.LEVEL_SEED}`, [best.png]);
+      console.log(`[Ship] ✓ Player sprite ${best.width}x${best.height}`);
+    }
+  } catch (e) { console.warn('[Ship] Failed:', e.message); }
+}
+
 function drawShip() {
   const pal = getMasterPalette();
   const W = CFG.INTERNAL_W, H = CFG.INTERNAL_H;
@@ -978,11 +1036,14 @@ function drawShip() {
   const y = H * 0.45 + state.cameraY + Math.sin(state.time * 2) * 1.5;
 
   ctx.save();
+
+  // Engine exhaust glow
   const glowSize = state.boost ? 18 : 10;
   ctx.fillStyle = pal.accent;
   ctx.globalAlpha = (state.boost ? 0.4 : 0.2) + Math.sin(state.time * 8) * 0.1;
   ctx.beginPath(); ctx.ellipse(shipX - 12, y, glowSize, 3, 0, 0, Math.PI * 2); ctx.fill();
 
+  // Exhaust particles
   ctx.globalAlpha = 1;
   const pCount = state.boost ? 12 : 5;
   for (let i = 0; i < pCount; i++) {
@@ -993,19 +1054,29 @@ function drawShip() {
     ctx.fillRect(px, py, Math.random() * 2, Math.random() * 2);
   }
 
+  // Draw ship sprite or procedural fallback
   ctx.globalAlpha = 1;
-  ctx.fillStyle = '#c0c8d4';
-  ctx.fillRect(shipX - 6, y - 3, 16, 6);
-  ctx.fillRect(shipX + 10, y - 2, 4, 4);
-  ctx.fillRect(shipX + 14, y - 1, 3, 2);
-  ctx.fillStyle = '#8898aa';
-  ctx.fillRect(shipX - 4, y - 7, 10, 4);
-  ctx.fillRect(shipX - 4, y + 3, 10, 4);
-  ctx.fillStyle = pal.glow;
-  ctx.fillRect(shipX + 12, y - 1, 2, 2);
-  ctx.fillStyle = pal.accent;
-  ctx.fillRect(shipX - 4, y - 8, 2, 2);
-  ctx.fillRect(shipX - 4, y + 6, 2, 2);
+  if (playerShipSprite) {
+    const aspect = playerShipSprite.width / playerShipSprite.height;
+    const drawH = 24;
+    const drawW = drawH * aspect;
+    ctx.drawImage(playerShipSprite, shipX - drawW * 0.3, y - drawH / 2, drawW, drawH);
+  } else {
+    // Procedural fallback
+    ctx.fillStyle = '#c0c8d4';
+    ctx.fillRect(shipX - 6, y - 3, 16, 6);
+    ctx.fillRect(shipX + 10, y - 2, 4, 4);
+    ctx.fillRect(shipX + 14, y - 1, 3, 2);
+    ctx.fillStyle = '#8898aa';
+    ctx.fillRect(shipX - 4, y - 7, 10, 4);
+    ctx.fillRect(shipX - 4, y + 3, 10, 4);
+    ctx.fillStyle = pal.glow;
+    ctx.fillRect(shipX + 12, y - 1, 2, 2);
+    ctx.fillStyle = pal.accent;
+    ctx.fillRect(shipX - 4, y - 8, 2, 2);
+    ctx.fillRect(shipX - 4, y + 6, 2, 2);
+  }
+
   ctx.restore();
 }
 
@@ -1089,7 +1160,7 @@ function render() {
       const aiTex = genai.getTexture(i);
       if (aiTex) {
         const scrollX = -(offX % W + W) % W;
-        ctx.globalAlpha = i === 0 ? 0.6 : 0.35;
+        ctx.globalAlpha = CFG.LAYER_OPACITY[i];
         ctx.globalCompositeOperation = 'screen';
         ctx.drawImage(aiTex, scrollX, 0, W, H);
         ctx.drawImage(aiTex, scrollX + W, 0, W, H);
@@ -1176,7 +1247,10 @@ if (hashLevel) {
       state.baseSpeed = level.terrain.base_speed || 1.2;
     }
     if (level.layers) {
-      level.layers.forEach((l, i) => { if (i < genai.LAYER_PROMPTS.length) genai.LAYER_PROMPTS[i] = l.prompt; });
+      level.layers.forEach((l, i) => {
+        if (i < genai.LAYER_PROMPTS.length) genai.LAYER_PROMPTS[i] = l.prompt;
+        if (l.opacity !== undefined && i < CFG.LAYER_OPACITY.length) CFG.LAYER_OPACITY[i] = l.opacity;
+      });
     }
     console.log(`[Level] Loaded "${level.name || 'Untitled'}" by ${level.author || 'unknown'} (seed ${CFG.LEVEL_SEED})`);
   } catch (e) { console.warn('[Level] Failed to parse URL level:', e.message); }
