@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SDXL Turbo — Studio</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;700&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a0f;
+    color: #e0e0e0;
+    font-family: 'JetBrains Mono', monospace;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Header ── */
+  header {
+    padding: 16px 24px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid #1a1a2a;
+  }
+  header h1 {
+    font-size: 20px;
+    font-weight: 700;
+    background: linear-gradient(135deg, #ff6b6b, #ffa94d, #ffd43b);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    letter-spacing: 4px;
+  }
+  header .subtitle { font-size: 10px; color: #555; letter-spacing: 2px; }
+  #server-status {
+    font-size: 11px;
+    padding: 4px 12px;
+    border-radius: 12px;
+    border: 1px solid #2a2a3a;
+  }
+  #server-status.ok { color: #51cf66; border-color: #2b4a2b; }
+  #server-status.err { color: #ff6b6b; border-color: #4a2b2b; }
+  #server-status.checking { color: #ffa94d; border-color: #4a3a2b; }
+
+  /* ── Main layout ── */
+  main {
+    flex: 1;
+    display: flex;
+    gap: 0;
+    overflow: hidden;
+  }
+
+  /* ── Sidebar controls ── */
+  .sidebar {
+    width: 320px;
+    min-width: 320px;
+    padding: 20px;
+    border-right: 1px solid #1a1a2a;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .section-title {
+    font-size: 9px;
+    font-weight: 700;
+    color: #555;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    margin-bottom: 4px;
+  }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label {
+    font-size: 10px;
+    color: #666;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+  .field label .val { color: #9775fa; font-variant-numeric: tabular-nums; }
+  .field textarea, .field input[type="text"] {
+    background: #14141f;
+    border: 1px solid #2a2a3a;
+    border-radius: 4px;
+    color: #e0e0e0;
+    font-family: inherit;
+    font-size: 12px;
+    padding: 8px 10px;
+    outline: none;
+    resize: vertical;
+  }
+  .field textarea:focus, .field input:focus { border-color: #ffa94d; }
+  .field textarea { min-height: 60px; }
+  #neg-prompt { min-height: 40px; font-size: 11px; color: #999; }
+
+  .field input[type="number"] {
+    background: #14141f;
+    border: 1px solid #2a2a3a;
+    border-radius: 4px;
+    color: #e0e0e0;
+    font-family: inherit;
+    font-size: 12px;
+    padding: 8px 10px;
+    outline: none;
+    width: 100%;
+  }
+
+  input[type="range"] {
+    -webkit-appearance: none;
+    width: 100%;
+    height: 4px;
+    background: #2a2a3a;
+    border-radius: 2px;
+    outline: none;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    background: #ffa94d;
+    border-radius: 50%;
+    cursor: pointer;
+  }
+
+  .row { display: flex; gap: 10px; }
+  .row > .field { flex: 1; }
+
+  select {
+    background: #14141f;
+    border: 1px solid #2a2a3a;
+    border-radius: 4px;
+    color: #e0e0e0;
+    font-family: inherit;
+    font-size: 12px;
+    padding: 8px 10px;
+    outline: none;
+    width: 100%;
+  }
+
+  .btn-row { display: flex; gap: 8px; margin-top: 4px; }
+  button {
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 10px 20px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    letter-spacing: 1px;
+    flex: 1;
+  }
+  .btn-primary {
+    background: linear-gradient(135deg, #ff6b6b, #ffa94d);
+    color: #0a0a0f;
+  }
+  .btn-secondary {
+    background: #1a1a2a;
+    color: #888;
+    border: 1px solid #2a2a3a;
+    flex: 0;
+    padding: 10px 14px;
+  }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button:hover:not(:disabled) { filter: brightness(1.1); }
+
+  /* ── Canvas area ── */
+  .canvas-area {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    position: relative;
+    overflow: auto;
+  }
+  #output-wrap {
+    position: relative;
+    background: #14141f;
+    border: 1px solid #2a2a3a;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  #output-canvas { display: block; }
+  #placeholder {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: #333;
+    font-size: 12px;
+    text-align: center;
+    line-height: 1.8;
+    pointer-events: none;
+  }
+  #gen-info {
+    margin-top: 10px;
+    font-size: 10px;
+    color: #555;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+  #gen-info .val { color: #9775fa; }
+  #gen-info .time { color: #51cf66; }
+
+  /* ── History strip ── */
+  .history-strip {
+    display: flex;
+    gap: 6px;
+    margin-top: 16px;
+    flex-wrap: wrap;
+    max-width: 600px;
+    justify-content: center;
+  }
+  .history-strip .thumb {
+    width: 56px;
+    height: 56px;
+    border-radius: 3px;
+    border: 1px solid #2a2a3a;
+    cursor: pointer;
+    object-fit: cover;
+    opacity: 0.7;
+    transition: opacity 0.15s, border-color 0.15s;
+  }
+  .history-strip .thumb:hover { opacity: 1; border-color: #ffa94d; }
+  .history-strip .thumb.active { opacity: 1; border-color: #ffa94d; }
+
+  /* ── Log ── */
+  #log-wrap {
+    border-top: 1px solid #1a1a2a;
+    padding: 8px 24px;
+    max-height: 120px;
+    overflow-y: auto;
+    font-size: 10px;
+    color: #4dabf7;
+    line-height: 1.6;
+  }
+  #log-wrap .err { color: #ff6b6b; }
+  #log-wrap .ok  { color: #51cf66; }
+  #log-wrap .dim { color: #444; }
+
+  /* ── Responsive ── */
+  @media (max-width: 800px) {
+    main { flex-direction: column; }
+    .sidebar { width: 100%; min-width: 0; border-right: none; border-bottom: 1px solid #1a1a2a; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>SDXL TURBO STUDIO</h1>
+    <div class="subtitle">CORE ML &middot; APPLE SILICON &middot; 1-4 STEP DIFFUSION</div>
+  </div>
+  <div id="server-status" class="checking">checking server...</div>
+</header>
+
+<main>
+  <div class="sidebar">
+    <div class="section-title">Prompt</div>
+    <div class="field">
+      <textarea id="prompt" placeholder="Describe the image...">alien landscape with bioluminescent crystals, pixel art, 16-bit, side-scrolling game background</textarea>
+    </div>
+    <div class="field">
+      <label>Negative Prompt</label>
+      <textarea id="neg-prompt" placeholder="What to avoid...">blurry, watermark, text, low quality</textarea>
+    </div>
+
+    <div class="section-title">Generation</div>
+    <div class="row">
+      <div class="field">
+        <label>Steps <span class="val" id="steps-val">1</span></label>
+        <input type="range" id="steps" min="1" max="4" value="1" step="1" />
+      </div>
+      <div class="field">
+        <label>CFG Scale <span class="val" id="cfg-val">0.0</span></label>
+        <input type="range" id="cfg" min="0" max="10" value="0" step="0.5" />
+      </div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label>Seed</label>
+        <input type="number" id="seed" value="42" min="0" />
+      </div>
+      <div class="field">
+        <label>Scheduler</label>
+        <select id="scheduler">
+          <option value="eulerAncestral" selected>Euler Ancestral</option>
+          <option value="dpmSolverMultistep">DPM++ Multistep</option>
+          <option value="pndm">PNDM</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="section-title">Output</div>
+    <div class="row">
+      <div class="field">
+        <label>Width</label>
+        <select id="width">
+          <option value="512" selected>512 (native)</option>
+          <option value="640">640 (upscaled)</option>
+          <option value="768">768 (upscaled)</option>
+          <option value="1024">1024 (upscaled)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Height</label>
+        <select id="height">
+          <option value="512" selected>512 (native)</option>
+          <option value="640">640 (upscaled)</option>
+          <option value="768">768 (upscaled)</option>
+          <option value="1024">1024 (upscaled)</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="section-title">Server</div>
+    <div class="field">
+      <label>Endpoint</label>
+      <input type="text" id="server-url" value="http://localhost:8090" />
+    </div>
+
+    <div class="btn-row">
+      <button class="btn-primary" id="btn-generate" disabled>GENERATE</button>
+      <button class="btn-secondary" id="btn-random" title="Random seed">&#x1f3b2;</button>
+      <button class="btn-secondary" id="btn-save" title="Save PNG" disabled>&#x1f4be;</button>
+    </div>
+  </div>
+
+  <div class="canvas-area">
+    <div id="output-wrap" style="width:512px;height:512px;">
+      <canvas id="output-canvas" width="512" height="512"></canvas>
+      <div id="placeholder">Connect to SDXL Turbo server to begin.</div>
+    </div>
+    <div id="gen-info"></div>
+    <div class="history-strip" id="history"></div>
+  </div>
+</main>
+
+<div id="log-wrap"></div>
+
+<script>
+// ============================================================
+//  SDXL Turbo Studio — Visual tuning UI
+//  Talks to the Swift Core ML server on localhost
+// ============================================================
+
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => document.querySelectorAll(s);
+
+// ── State ───────────────────────────────────
+const history = [];  // { blob, url, params, time }
+let generating = false;
+let lastImageUrl = null;
+
+// ── Logging ─────────────────────────────────
+function log(msg, cls = '') {
+  const el = $('#log-wrap');
+  const line = document.createElement('div');
+  if (cls) line.className = cls;
+  line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+}
+
+// ── Server connection ───────────────────────
+async function checkServer() {
+  const status = $('#server-status');
+  const url = $('#server-url').value.trim();
+  status.textContent = 'checking...';
+  status.className = 'checking';
+
+  try {
+    const r = await fetch(`${url}/health`, { signal: AbortSignal.timeout(2000) });
+    if (r.ok) {
+      const data = await r.json();
+      status.textContent = `connected — ${data.model || 'unknown'}`;
+      status.className = 'ok';
+      $('#btn-generate').disabled = false;
+      log(`Server connected at ${url}`, 'ok');
+      return true;
+    }
+  } catch (e) {
+    status.textContent = 'disconnected';
+    status.className = 'err';
+    $('#btn-generate').disabled = true;
+    log(`Server unreachable at ${url}`, 'err');
+  }
+  return false;
+}
+
+// ── Generation ──────────────────────────────
+async function generate() {
+  if (generating) return;
+  generating = true;
+
+  const btn = $('#btn-generate');
+  btn.disabled = true;
+  btn.textContent = 'GENERATING...';
+
+  const params = {
+    prompt: $('#prompt').value.trim(),
+    negative_prompt: $('#neg-prompt').value.trim(),
+    seed: parseInt($('#seed').value) || 0,
+    steps: parseInt($('#steps').value),
+    guidance_scale: parseFloat($('#cfg').value),
+    scheduler: $('#scheduler').value,
+    width: parseInt($('#width').value),
+    height: parseInt($('#height').value),
+  };
+
+  log(`Generating: "${params.prompt.slice(0, 50)}..." seed=${params.seed} steps=${params.steps} cfg=${params.guidance_scale}`);
+  const t0 = performance.now();
+
+  try {
+    const url = $('#server-url').value.trim();
+    const r = await fetch(`${url}/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+      throw new Error(err.error || `HTTP ${r.status}`);
+    }
+
+    const blob = await r.blob();
+    const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
+
+    // Display
+    const imgUrl = URL.createObjectURL(blob);
+    displayImage(imgUrl, params.width, params.height);
+
+    // Update info bar
+    $('#gen-info').innerHTML =
+      `<span class="time">${elapsed}s</span> &middot; ` +
+      `<span class="val">${params.width}x${params.height}</span> &middot; ` +
+      `seed <span class="val">${params.seed}</span> &middot; ` +
+      `${params.steps} step${params.steps > 1 ? 's' : ''} &middot; ` +
+      `cfg <span class="val">${params.guidance_scale}</span>`;
+
+    // Add to history
+    addToHistory(blob, imgUrl, params, elapsed);
+
+    log(`Done in ${elapsed}s (${(blob.size / 1024).toFixed(0)} KB)`, 'ok');
+    $('#btn-save').disabled = false;
+
+  } catch (e) {
+    log(`Error: ${e.message}`, 'err');
+  }
+
+  generating = false;
+  btn.disabled = false;
+  btn.textContent = 'GENERATE';
+}
+
+function displayImage(url, width, height) {
+  const wrap = $('#output-wrap');
+  const canvas = $('#output-canvas');
+  wrap.style.width = width + 'px';
+  wrap.style.height = height + 'px';
+  canvas.width = width;
+  canvas.height = height;
+
+  const ctx = canvas.getContext('2d');
+  const img = new Image();
+  img.onload = () => {
+    ctx.drawImage(img, 0, 0);
+    $('#placeholder').style.display = 'none';
+  };
+  img.src = url;
+  lastImageUrl = url;
+}
+
+function addToHistory(blob, url, params, elapsed) {
+  history.unshift({ blob, url, params, time: elapsed });
+  if (history.length > 24) {
+    const old = history.pop();
+    URL.revokeObjectURL(old.url);
+  }
+  renderHistory();
+}
+
+function renderHistory() {
+  const strip = $('#history');
+  strip.innerHTML = '';
+  history.forEach((entry, i) => {
+    const img = document.createElement('img');
+    img.className = 'thumb' + (i === 0 ? ' active' : '');
+    img.src = entry.url;
+    img.title = `seed=${entry.params.seed} steps=${entry.params.steps} cfg=${entry.params.guidance_scale} (${entry.time}s)`;
+    img.addEventListener('click', () => {
+      // Restore this generation's settings
+      displayImage(entry.url, entry.params.width, entry.params.height);
+      $('#prompt').value = entry.params.prompt;
+      $('#neg-prompt').value = entry.params.negative_prompt || '';
+      $('#seed').value = entry.params.seed;
+      $('#steps').value = entry.params.steps;
+      $('#steps-val').textContent = entry.params.steps;
+      $('#cfg').value = entry.params.guidance_scale;
+      $('#cfg-val').textContent = entry.params.guidance_scale.toFixed(1);
+      $('#width').value = entry.params.width;
+      $('#height').value = entry.params.height;
+      $('#gen-info').innerHTML =
+        `<span class="time">${entry.time}s</span> &middot; ` +
+        `<span class="val">${entry.params.width}x${entry.params.height}</span> &middot; ` +
+        `seed <span class="val">${entry.params.seed}</span> &middot; ` +
+        `${entry.params.steps} step${entry.params.steps > 1 ? 's' : ''} &middot; ` +
+        `cfg <span class="val">${entry.params.guidance_scale}</span>`;
+      $$('.thumb').forEach(t => t.classList.remove('active'));
+      img.classList.add('active');
+      lastImageUrl = entry.url;
+      $('#btn-save').disabled = false;
+    });
+    strip.appendChild(img);
+  });
+}
+
+// ── Slider labels ───────────────────────────
+$('#steps').addEventListener('input', (e) => {
+  $('#steps-val').textContent = e.target.value;
+});
+$('#cfg').addEventListener('input', (e) => {
+  $('#cfg-val').textContent = parseFloat(e.target.value).toFixed(1);
+});
+
+// ── Buttons ─────────────────────────────────
+$('#btn-generate').addEventListener('click', generate);
+
+$('#btn-random').addEventListener('click', () => {
+  $('#seed').value = Math.floor(Math.random() * 2147483647);
+});
+
+$('#btn-save').addEventListener('click', () => {
+  if (!lastImageUrl) return;
+  const a = document.createElement('a');
+  a.href = lastImageUrl;
+  const seed = $('#seed').value;
+  a.download = `sdxl-turbo-s${seed}-${Date.now()}.png`;
+  a.click();
+});
+
+// ── Keyboard shortcuts ──────────────────────
+document.addEventListener('keydown', (e) => {
+  // Ctrl/Cmd+Enter to generate
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+    e.preventDefault();
+    if (!$('#btn-generate').disabled) generate();
+  }
+  // Ctrl/Cmd+R to randomize seed
+  if ((e.ctrlKey || e.metaKey) && e.key === 'r' && !e.shiftKey) {
+    e.preventDefault();
+    $('#btn-random').click();
+  }
+  // Ctrl/Cmd+S to save
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+    e.preventDefault();
+    $('#btn-save').click();
+  }
+});
+
+// ── Server URL change ───────────────────────
+$('#server-url').addEventListener('change', checkServer);
+
+// ── Boot ────────────────────────────────────
+checkServer();
+</script>
+</body>
+</html>

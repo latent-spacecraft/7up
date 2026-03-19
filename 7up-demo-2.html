@@ -1,0 +1,848 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>7UP Engine — Latent Space Sidescroller</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;700&family=Orbitron:wght@400;700;900&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #0a0a0f;
+    color: #e0e0e0;
+    font-family: 'JetBrains Mono', monospace;
+    overflow: hidden;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+
+  #header {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 100;
+    padding: 10px 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: linear-gradient(180deg, rgba(10,10,15,0.95) 0%, transparent 100%);
+    pointer-events: none;
+  }
+
+  #header h1 {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 18px;
+    font-weight: 900;
+    background: linear-gradient(135deg, #ff6b6b, #ffa94d, #ffd43b);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    letter-spacing: 4px;
+  }
+
+  #header .subtitle {
+    font-size: 10px;
+    color: #666;
+    letter-spacing: 2px;
+  }
+
+  #hud {
+    position: fixed;
+    top: 12px; right: 20px;
+    z-index: 100;
+    text-align: right;
+    font-size: 10px;
+    color: #4dabf7;
+    line-height: 1.6;
+    pointer-events: none;
+    font-variant-numeric: tabular-nums;
+  }
+
+  #hud .label { color: #555; }
+  #hud .val { color: #9775fa; }
+  #hud .seed { color: #51cf66; }
+  #hud .lerp { color: #ffa94d; }
+
+  canvas {
+    display: block;
+    image-rendering: pixelated;
+    width: 100vw;
+    height: 100vh;
+    cursor: none;
+  }
+
+  #controls {
+    position: fixed;
+    bottom: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 100;
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    font-size: 10px;
+    color: #444;
+    pointer-events: none;
+  }
+
+  #controls kbd {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid #333;
+    border-radius: 3px;
+    padding: 2px 6px;
+    color: #888;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+  }
+
+  #svg-overlay {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100vw;
+    height: 100vh;
+    pointer-events: none;
+    z-index: 50;
+  }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <div>
+    <h1>7UP</h1>
+    <div class="subtitle">LATENT SPACE SIDESCROLLER</div>
+  </div>
+</div>
+
+<div id="hud">
+  <div><span class="label">FPS </span><span id="fps" class="val">60</span></div>
+  <div><span class="label">X </span><span id="xpos" class="val">0.00</span></div>
+  <div><span class="label">SEED.A </span><span id="seedA" class="seed">002a</span></div>
+  <div><span class="label">SEED.B </span><span id="seedB" class="seed">0031</span></div>
+  <div><span class="label">BLEND </span><span id="blendT" class="lerp">0.00</span></div>
+  <div><span class="label">LAYER </span><span id="layercount" class="val">7</span></div>
+  <div><span class="label">LEVEL </span><span id="levelseed" class="seed">42</span></div>
+</div>
+
+<canvas id="game"></canvas>
+
+<svg id="svg-overlay" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="vignette" cx="50%" cy="50%" r="70%">
+      <stop offset="0%" stop-color="transparent"/>
+      <stop offset="100%" stop-color="#0a0a0f" stop-opacity="0.7"/>
+    </radialGradient>
+  </defs>
+  <rect width="100%" height="100%" fill="url(#vignette)"/>
+</svg>
+
+<div id="controls">
+  <span><kbd>←</kbd><kbd>→</kbd> move</span>
+  <span><kbd>↑</kbd><kbd>↓</kbd> altitude</span>
+  <span><kbd>SPACE</kbd> boost</span>
+  <span><kbd>1-7</kbd> solo layer</span>
+</div>
+
+<script>
+// ============================================================
+//  7UP ENGINE v0.3.0 — GenAI Texture Pipeline
+//  Dual SeedFrame crossfade · per-layer rate scaling
+//  Local SDXL Turbo server integration
+// ============================================================
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+const CFG = {
+  INTERNAL_W: 480,
+  INTERNAL_H: 270,
+  NUM_LAYERS: 7,
+  TARGET_FPS: 60,
+  SEED_PERIOD: 2000,
+  GENAI_SERVER: 'http://localhost:8090',
+  // SDXL Turbo sweet spot (tuned 2026-03-18)
+  GENAI_STEPS: 2,
+  GENAI_CFG: 1.0,
+  GENAI_SCHEDULER: 'eulerAncestral',
+  LEVEL_SEED: 42,  // The level seed — share this number to share the world
+};
+
+// ── SEEDED PRNG ──────────────────────────────
+class SeededRNG {
+  constructor(seed) {
+    this.s = [seed | 0, (seed * 1812433253 + 1) | 0, (seed * 48271) | 0, (seed * 69069 + 1) | 0];
+  }
+  next() {
+    let t = this.s[3];
+    t ^= t << 11; t ^= t >>> 8;
+    this.s[3] = this.s[2]; this.s[2] = this.s[1]; this.s[1] = this.s[0];
+    t ^= this.s[0]; t ^= this.s[0] >>> 19;
+    this.s[0] = t;
+    return (t >>> 0) / 4294967296;
+  }
+  range(a, b) { return a + this.next() * (b - a); }
+  int(a, b) { return Math.floor(this.range(a, b)); }
+}
+
+// ── VALUE NOISE ──────────────────────────────
+class NoiseField {
+  constructor(seed, octaves = 4) {
+    this.octaves = octaves;
+    const rng = new SeededRNG(seed);
+    this.perm = new Uint8Array(512);
+    for (let i = 0; i < 256; i++) this.perm[i] = i;
+    for (let i = 255; i > 0; i--) {
+      const j = rng.int(0, i + 1);
+      [this.perm[i], this.perm[j]] = [this.perm[j], this.perm[i]];
+    }
+    for (let i = 0; i < 256; i++) this.perm[i + 256] = this.perm[i];
+    this.grad = new Float32Array(256);
+    for (let i = 0; i < 256; i++) this.grad[i] = (rng.next() - 0.5) * 2;
+  }
+  _noise1D(x) {
+    const xi = Math.floor(x) & 255;
+    const xf = x - Math.floor(x);
+    const u = xf * xf * (3 - 2 * xf);
+    return this.grad[this.perm[xi]] * (1 - u) + this.grad[this.perm[xi + 1]] * u;
+  }
+  get(x, scale = 1) {
+    let val = 0, amp = 1, freq = scale, totalAmp = 0;
+    for (let o = 0; o < this.octaves; o++) {
+      val += this._noise1D(x * freq) * amp;
+      totalAmp += amp; amp *= 0.5; freq *= 2;
+    }
+    return val / totalAmp;
+  }
+}
+
+// ── INTERPOLATION MATH ──────────────────────
+function smoothstep5(t) {
+  // Quintic smoothstep — C2 continuous, zero 1st+2nd derivative at endpoints
+  t = Math.max(0, Math.min(1, t));
+  return t * t * t * (t * (t * 6 - 15) + 10);
+}
+
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+// HSL color interpolation with shortest-arc hue
+function parseHSL(c) {
+  const m = c.match(/hsla?\(\s*([^,]+),\s*([^,]+)%,\s*([^,%)]+)%(?:,\s*([^)]+))?\)/);
+  if (!m) return { h: 0, s: 0, l: 0, a: 1 };
+  return { h: +m[1], s: +m[2], l: +m[3], a: m[4] !== undefined ? +m[4] : 1 };
+}
+
+function lerpColor(c1, c2, t) {
+  const a = parseHSL(c1), b = parseHSL(c2);
+  let dh = b.h - a.h;
+  if (dh > 180) dh -= 360;
+  if (dh < -180) dh += 360;
+  const h = ((a.h + dh * t) % 360 + 360) % 360;
+  const s = lerp(a.s, b.s, t);
+  const l = lerp(a.l, b.l, t);
+  const al = lerp(a.a, b.a, t);
+  return al < 0.999 ? `hsla(${h}, ${s}%, ${l}%, ${al})` : `hsl(${h}, ${s}%, ${l}%)`;
+}
+
+function lerpPalette(pA, pB, t) {
+  const out = {};
+  for (const key of Object.keys(pA)) out[key] = lerpColor(pA[key], pB[key], t);
+  return out;
+}
+
+// ── SEED FRAME ───────────────────────────────
+// A complete generative snapshot: noise fields + palette
+class SeedFrame {
+  constructor(seed) {
+    this.seed = seed;
+    this.noises = [];
+    for (let i = 0; i < CFG.NUM_LAYERS; i++) {
+      this.noises.push(new NoiseField(seed * 1000 + i * 137, 4 + Math.floor(i / 2)));
+    }
+    this.palette = generatePalette(seed);
+  }
+}
+
+// ── PALETTE ──────────────────────────────────
+function generatePalette(seed) {
+  const rng = new SeededRNG(seed);
+  const hue = rng.range(0, 360);
+  return {
+    sky1:   `hsl(${(hue + 240) % 360}, 60%, ${rng.range(4, 10)}%)`,
+    sky2:   `hsl(${(hue + 260) % 360}, 50%, ${rng.range(15, 25)}%)`,
+    nebula: `hsla(${(hue + 300) % 360}, 80%, 50%, 0.08)`,
+    stars:  `hsl(${(hue + 30) % 360}, 20%, 90%)`,
+    far:    `hsl(${(hue + 200) % 360}, 40%, ${rng.range(15, 25)}%)`,
+    mid:    `hsl(${(hue + 180) % 360}, 50%, ${rng.range(20, 35)}%)`,
+    near:   `hsl(${(hue + 160) % 360}, 60%, ${rng.range(10, 20)}%)`,
+    ground: `hsl(${(hue + 140) % 360}, 70%, ${rng.range(8, 15)}%)`,
+    accent: `hsl(${(hue + 30) % 360}, 90%, 65%)`,
+    glow:   `hsl(${(hue + 60) % 360}, 100%, 75%)`,
+    fog:    `hsla(${(hue + 240) % 360}, 30%, 12%, 0.4)`,
+  };
+}
+
+// ── LAYERS ────────────────────────────────────
+// seedRate: how quickly this layer transitions relative to global T
+// deep layers morph slowly, near layers morph fast
+const LAYERS = [
+  { name: 'deep-space',   speed: 0.02, zDepth: 0.98, seedRate: 0.15 },
+  { name: 'nebula',       speed: 0.06, zDepth: 0.90, seedRate: 0.25 },
+  { name: 'far-terrain',  speed: 0.12, zDepth: 0.75, seedRate: 0.40 },
+  { name: 'mid-terrain',  speed: 0.25, zDepth: 0.55, seedRate: 0.60 },
+  { name: 'structures',   speed: 0.40, zDepth: 0.35, seedRate: 0.75 },
+  { name: 'near-terrain', speed: 0.65, zDepth: 0.15, seedRate: 0.90 },
+  { name: 'foreground',   speed: 0.90, zDepth: 0.02, seedRate: 1.00 },
+];
+
+// ── STATE ─────────────────────────────────────
+const state = {
+  cameraX: 0, cameraY: 0, targetY: 0,
+  velocity: 0, boost: false,
+  soloLayer: -1, baseSpeed: 1.2,
+  time: 0, keys: {},
+  fps: 60, frameCount: 0, lastFpsTime: 0,
+  // Dual seed frame system
+  frameA: null, frameB: null,
+  seedIdxA: 0, seedIdxB: 1,
+  globalT: 0,
+};
+
+function seedForWaypoint(idx) { return 42 + idx * 7; }
+
+function initEngine() {
+  state.seedIdxA = 0;
+  state.seedIdxB = 1;
+  state.frameA = new SeedFrame(seedForWaypoint(0));
+  state.frameB = new SeedFrame(seedForWaypoint(1));
+  state.globalT = 0;
+}
+
+// ── INTERPOLATED ACCESSORS ───────────────────
+// The heart of smooth transitions. Every generator
+// reads through these instead of a single noise/palette.
+
+function layerT(layerIdx) {
+  // Per-layer blend: deep layers lag behind, near layers lead.
+  // Using a nonlinear ramp so deep layers barely change
+  // while foreground is already fully transitioned.
+  const rate = LAYERS[layerIdx].seedRate;
+  // Remap globalT through the layer's rate curve
+  const scaled = Math.pow(state.globalT, 1.0 + (1.0 - rate) * 2.0);
+  return smoothstep5(scaled);
+}
+
+function getLayerNoise(layerIdx, x, scale) {
+  const t = layerT(layerIdx);
+  const nA = state.frameA.noises[layerIdx].get(x, scale);
+  const nB = state.frameB.noises[layerIdx].get(x, scale);
+  return lerp(nA, nB, t);
+}
+
+function getLayerPalette(layerIdx) {
+  return lerpPalette(state.frameA.palette, state.frameB.palette, layerT(layerIdx));
+}
+
+function getMasterPalette() {
+  return lerpPalette(state.frameA.palette, state.frameB.palette, smoothstep5(state.globalT));
+}
+
+// ── GENERATORS ───────────────────────────────
+
+function drawStarfield(offX, layerIdx, alpha) {
+  // Dual-draw crossfade: render both star sets, blend by layerT
+  const lt = layerT(layerIdx);
+  const pal = getLayerPalette(layerIdx);
+  const W = CFG.INTERNAL_W, H = CFG.INTERNAL_H;
+  const count = layerIdx === 0 ? 200 : 80;
+
+  ctx.save();
+  for (let pass = 0; pass < 2; pass++) {
+    const frame = pass === 0 ? state.frameA : state.frameB;
+    const pAlpha = pass === 0 ? (1 - lt) : lt;
+    if (pAlpha < 0.01) continue;
+
+    const rng = new SeededRNG(frame.seed + layerIdx);
+    for (let i = 0; i < count; i++) {
+      const baseX = rng.range(0, W * 3);
+      const baseY = rng.range(0, H);
+      let sx = ((baseX - offX) % (W * 3) + W * 3) % (W * 3) - W;
+
+      if (sx < -5 || sx > W + 5) { rng.next(); continue; }
+
+      const flicker = 0.6 + 0.4 * Math.sin(state.time * rng.range(1, 4) + i);
+      const size = rng.range(0.3, layerIdx === 0 ? 2.0 : 1.2);
+
+      if (size > 1.2) {
+        ctx.fillStyle = pal.glow;
+        ctx.globalAlpha = alpha * pAlpha * flicker * 0.3;
+        ctx.fillRect(sx - size * 2, baseY - 0.5, size * 4, 1);
+        ctx.fillRect(sx - 0.5, baseY - size * 2, 1, size * 4);
+      }
+      ctx.globalAlpha = alpha * pAlpha * flicker;
+      ctx.fillStyle = rng.next() > 0.85 ? pal.accent : pal.stars;
+      ctx.fillRect(Math.round(sx), Math.round(baseY), Math.ceil(size), Math.ceil(size));
+    }
+  }
+  ctx.restore();
+}
+
+function drawNebula(offX, layerIdx) {
+  const pal = getLayerPalette(layerIdx);
+  const W = CFG.INTERNAL_W, H = CFG.INTERNAL_H;
+
+  ctx.save();
+  for (let x = 0; x < W; x += 4) {
+    const worldX = (x + offX) * 0.003;
+    const n = getLayerNoise(layerIdx, worldX, 0.5) * 0.5 + 0.5;
+    const n2 = getLayerNoise(layerIdx, worldX + 100, 0.3) * 0.5 + 0.5;
+    const yCenter = H * 0.3 + getLayerNoise(layerIdx, worldX, 0.1) * H * 0.25;
+    const spread = 30 + n * 80;
+    const hue = (240 + n * 120) % 360;
+    ctx.fillStyle = `hsla(${hue}, 70%, 40%, ${0.015 + n2 * 0.02})`;
+    ctx.fillRect(x, yCenter - spread, 5, spread * 2);
+    if (n > 0.65) {
+      ctx.fillStyle = `hsla(${(hue + 60) % 360}, 90%, 60%, 0.02)`;
+      ctx.fillRect(x, yCenter - spread * 0.3, 5, spread * 0.6);
+    }
+  }
+  ctx.restore();
+}
+
+function buildTerrainPath(offX, layerIdx, yBase, amplitude, detail) {
+  // Build and return a terrain path for reuse (fill + clip + stroke)
+  const W = CFG.INTERNAL_W, H = CFG.INTERNAL_H;
+  const path = new Path2D();
+  path.moveTo(0, H);
+  for (let x = 0; x <= W; x += 2) {
+    const worldX = (x + offX) * detail;
+    const h = getLayerNoise(layerIdx, worldX, 0.5);
+    const h2 = getLayerNoise(layerIdx, worldX, 2.0) * 0.3;
+    path.lineTo(x, yBase + (h + h2) * amplitude);
+  }
+  path.lineTo(W, H);
+  path.closePath();
+  return path;
+}
+
+function drawTerrain(offX, layerIdx, yBase, amplitude, detail) {
+  const pal = getLayerPalette(layerIdx);
+  const colorKey = layerIdx === 2 ? 'far' : layerIdx === 3 ? 'mid' :
+                   layerIdx === 5 ? 'near' : 'ground';
+  const W = CFG.INTERNAL_W, H = CFG.INTERNAL_H;
+  const path = buildTerrainPath(offX, layerIdx, yBase, amplitude, detail);
+
+  ctx.save();
+
+  // Fill with procedural color
+  ctx.fillStyle = pal[colorKey];
+  ctx.fill(path);
+
+  // If AI texture is available, fill terrain shape with it
+  const aiTex = genai.getTexture(layerIdx);
+  if (aiTex) {
+    ctx.save();
+    ctx.clip(path);
+    const scrollX = -(offX % W + W) % W;
+    ctx.globalAlpha = 0.6;
+    ctx.globalCompositeOperation = 'overlay';
+    ctx.drawImage(aiTex, scrollX, 0, W, H);
+    ctx.drawImage(aiTex, scrollX + W, 0, W, H);
+    ctx.restore();
+  }
+
+  // Edge glow
+  ctx.strokeStyle = pal.glow;
+  ctx.globalAlpha = 0.06 + LAYERS[layerIdx].speed * 0.08;
+  ctx.lineWidth = 0.5;
+  ctx.beginPath();
+  for (let x = 0; x <= W; x += 2) {
+    const worldX = (x + offX) * detail;
+    const h = getLayerNoise(layerIdx, worldX, 0.5);
+    const h2 = getLayerNoise(layerIdx, worldX, 2.0) * 0.3;
+    const y = yBase + (h + h2) * amplitude;
+    x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawStructures(offX, layerIdx) {
+  const pal = getLayerPalette(layerIdx);
+  const lt = layerT(layerIdx);
+  const W = CFG.INTERNAL_W, H = CFG.INTERNAL_H;
+
+  ctx.save();
+  // Crossfade two sets of structures
+  for (let pass = 0; pass < 2; pass++) {
+    const frame = pass === 0 ? state.frameA : state.frameB;
+    const pAlpha = pass === 0 ? (1 - lt) : lt;
+    if (pAlpha < 0.02) continue;
+
+    const spacing = 120;
+    const start = Math.floor((offX - W) / spacing);
+    const end = Math.ceil((offX + W * 2) / spacing);
+
+    for (let si = start; si < end; si++) {
+      const srng = new SeededRNG(frame.seed + si * 777);
+      const worldX = si * spacing + srng.range(-20, 20);
+      const screenX = worldX - offX;
+      if (screenX < -60 || screenX > W + 60) continue;
+
+      const type = srng.int(0, 4);
+      const height = srng.range(20, 80);
+      const width = srng.range(8, 25);
+      const baseY = H * 0.55 + getLayerNoise(layerIdx, worldX * 0.008, 0.5) * 40;
+
+      ctx.globalAlpha = 0.7 * pAlpha;
+
+      if (type === 0) {
+        const grad = ctx.createLinearGradient(screenX, baseY - height, screenX, baseY);
+        grad.addColorStop(0, pal.accent); grad.addColorStop(1, pal.near);
+        ctx.fillStyle = grad;
+        ctx.fillRect(screenX - width/2, baseY - height, width, height);
+        ctx.fillStyle = pal.glow;
+        ctx.globalAlpha = pAlpha * (0.4 + 0.3 * Math.sin(state.time * 2 + si));
+        ctx.fillRect(screenX - 2, baseY - height * 0.7, 4, 4);
+      } else if (type === 1) {
+        ctx.strokeStyle = pal.mid; ctx.lineWidth = 1;
+        ctx.globalAlpha = 0.5 * pAlpha;
+        ctx.beginPath(); ctx.moveTo(screenX, baseY);
+        ctx.lineTo(screenX, baseY - height * 1.5); ctx.stroke();
+        ctx.fillStyle = pal.accent;
+        ctx.globalAlpha = pAlpha * (0.5 + 0.5 * Math.sin(state.time * 3 + si * 2));
+        ctx.fillRect(screenX - 1, baseY - height * 1.5 - 2, 3, 3);
+      } else if (type === 2) {
+        ctx.fillStyle = pal.far; ctx.globalAlpha = 0.5 * pAlpha;
+        ctx.beginPath(); ctx.arc(screenX, baseY, width, Math.PI, 0); ctx.fill();
+        ctx.strokeStyle = pal.accent; ctx.globalAlpha = 0.15 * pAlpha;
+        ctx.lineWidth = 0.5; ctx.stroke();
+      } else {
+        ctx.fillStyle = pal.glow; ctx.globalAlpha = 0.15 * pAlpha;
+        ctx.beginPath();
+        ctx.moveTo(screenX, baseY - height);
+        ctx.lineTo(screenX + width/2, baseY);
+        ctx.lineTo(screenX - width/2, baseY);
+        ctx.closePath(); ctx.fill();
+        ctx.strokeStyle = pal.glow; ctx.globalAlpha = 0.3 * pAlpha;
+        ctx.lineWidth = 0.5; ctx.stroke();
+      }
+    }
+  }
+  ctx.restore();
+}
+
+function drawForegroundParticles(offX, layerIdx) {
+  const pal = getLayerPalette(layerIdx);
+  const lt = layerT(layerIdx);
+  const W = CFG.INTERNAL_W, H = CFG.INTERNAL_H;
+
+  ctx.save();
+  for (let pass = 0; pass < 2; pass++) {
+    const frame = pass === 0 ? state.frameA : state.frameB;
+    const pAlpha = pass === 0 ? (1 - lt) : lt;
+    if (pAlpha < 0.02) continue;
+
+    const rng = new SeededRNG(frame.seed + 9999);
+    for (let i = 0; i < 40; i++) {
+      const baseX = rng.range(0, W * 4);
+      const baseY = rng.range(0, H);
+      const speed = rng.range(0.8, 1.1);
+      let px = ((baseX - offX * speed) % (W * 4) + W * 4) % (W * 4) - W * 0.5;
+      const py = baseY + Math.sin(state.time * rng.range(0.5, 2) + i) * 3;
+      const size = rng.range(0.5, 2.5);
+      if (px < -5 || px > W + 5) continue;
+      ctx.fillStyle = pal.glow;
+      ctx.globalAlpha = pAlpha * rng.range(0.05, 0.2);
+      ctx.fillRect(px, py, size, size);
+    }
+  }
+  ctx.restore();
+}
+
+function drawFog(offX, layerIdx) {
+  const pal = getLayerPalette(layerIdx);
+  const W = CFG.INTERNAL_W, H = CFG.INTERNAL_H;
+
+  ctx.save();
+  ctx.globalAlpha = 0.12;
+  for (let x = 0; x < W; x += 8) {
+    const worldX = (x + offX) * 0.005;
+    const fogH = 20 + getLayerNoise(layerIdx, worldX + state.time * 0.1, 0.3) * 30;
+    const fogY = H * 0.6 + getLayerNoise(layerIdx, worldX, 0.2) * 20;
+    ctx.fillStyle = pal.fog;
+    ctx.fillRect(x, fogY, 10, fogH);
+  }
+  ctx.restore();
+}
+
+// ── GENAI TEXTURE CLIENT ─────────────────────
+// Single-seed level system: one set of 7 textures per level.
+// Share a seed number → share the world (like Mario Maker level codes).
+const genai = {
+  available: false,
+  textures: new Array(CFG.NUM_LAYERS).fill(null), // layerIdx → ImageBitmap
+  pending: new Set(),
+  loaded: 0,
+  checked: false,
+
+  // Per-layer prompts — tileable textures that work as terrain fills
+  LAYER_PROMPTS: [
+    'seamless tileable starfield texture, deep space, thousands of tiny stars, colorful nebula wisps, dark black background, astronomy photo, repeating pattern',
+    'seamless tileable space nebula texture, cosmic gas clouds, purple blue pink wisps, transparent on dark, repeating pattern',
+    'seamless tileable rocky cliff texture, dark stone, layered sediment, purple tint, side view, game terrain fill, repeating',
+    'seamless tileable alien rock wall texture, crystalline formations, bioluminescent veins, dark stone, game terrain, repeating pattern',
+    'seamless tileable sci-fi metal panel texture, alien architecture surface, glowing seams, dark, game texture, repeating',
+    'seamless tileable mossy rock texture, alien vegetation, glowing fungus spots, detailed surface, game terrain fill, repeating',
+    'seamless tileable dark ground texture, alien soil with small crystals, close up surface detail, game foreground, repeating',
+  ],
+
+  async checkServer() {
+    if (this.checked) return;
+    this.checked = true;
+    try {
+      const r = await fetch(`${CFG.GENAI_SERVER}/health`, { signal: AbortSignal.timeout(2000) });
+      if (r.ok) {
+        this.available = true;
+        console.log(`[GenAI] Server connected — generating level textures for seed ${CFG.LEVEL_SEED}`);
+        document.getElementById('layercount').textContent = '7+AI';
+        this.generateLevel(CFG.LEVEL_SEED);
+      }
+    } catch { /* server not running — procedural fallback */ }
+  },
+
+  // Generate all 7 layer textures for a level seed
+  generateLevel(levelSeed) {
+    for (let i = 0; i < CFG.NUM_LAYERS; i++) {
+      this._request(i, levelSeed);
+    }
+  },
+
+  getTexture(layerIdx) {
+    return this.textures[layerIdx];
+  },
+
+  _request(layerIdx, levelSeed) {
+    if (this.pending.has(layerIdx) || this.textures[layerIdx]) return;
+    this.pending.add(layerIdx);
+
+    // Each layer gets a deterministic seed derived from the level seed
+    const seed = levelSeed * 7 + layerIdx * 1337;
+    const prompt = this.LAYER_PROMPTS[layerIdx];
+
+    console.log(`[GenAI] L${layerIdx}: "${prompt.slice(0, 50)}..." seed=${seed}`);
+
+    fetch(`${CFG.GENAI_SERVER}/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt, seed,
+        width: 512, height: 512,
+        steps: CFG.GENAI_STEPS,
+        guidance_scale: CFG.GENAI_CFG,
+        scheduler: CFG.GENAI_SCHEDULER,
+      }),
+    })
+    .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.blob(); })
+    .then(blob => createImageBitmap(blob))
+    .then(img => {
+      this.textures[layerIdx] = img;
+      this.pending.delete(layerIdx);
+      this.loaded++;
+      console.log(`[GenAI] ✓ L${layerIdx} ready (${this.loaded}/${CFG.NUM_LAYERS})`);
+      if (this.loaded === CFG.NUM_LAYERS) {
+        console.log(`[GenAI] ✓ All textures loaded for level seed ${levelSeed}`);
+      }
+    })
+    .catch(e => {
+      this.pending.delete(layerIdx);
+      console.warn(`[GenAI] ✗ L${layerIdx} failed:`, e.message);
+    });
+  },
+};
+
+// ── SHIP ─────────────────────────────────────
+function drawShip() {
+  const pal = getMasterPalette();
+  const W = CFG.INTERNAL_W, H = CFG.INTERNAL_H;
+  const shipX = W * 0.25;
+  const y = H * 0.45 + state.cameraY + Math.sin(state.time * 2) * 1.5;
+
+  ctx.save();
+  const glowSize = state.boost ? 18 : 10;
+  ctx.fillStyle = pal.accent;
+  ctx.globalAlpha = (state.boost ? 0.4 : 0.2) + Math.sin(state.time * 8) * 0.1;
+  ctx.beginPath(); ctx.ellipse(shipX - 12, y, glowSize, 3, 0, 0, Math.PI * 2); ctx.fill();
+
+  ctx.globalAlpha = 1;
+  const pCount = state.boost ? 12 : 5;
+  for (let i = 0; i < pCount; i++) {
+    const px = shipX - 14 - Math.random() * (state.boost ? 30 : 15);
+    const py = y + (Math.random() - 0.5) * 4;
+    ctx.fillStyle = Math.random() > 0.5 ? pal.accent : pal.glow;
+    ctx.globalAlpha = Math.random() * 0.7;
+    ctx.fillRect(px, py, Math.random() * 2, Math.random() * 2);
+  }
+
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#c0c8d4';
+  ctx.fillRect(shipX - 6, y - 3, 16, 6);
+  ctx.fillRect(shipX + 10, y - 2, 4, 4);
+  ctx.fillRect(shipX + 14, y - 1, 3, 2);
+  ctx.fillStyle = '#8898aa';
+  ctx.fillRect(shipX - 4, y - 7, 10, 4);
+  ctx.fillRect(shipX - 4, y + 3, 10, 4);
+  ctx.fillStyle = pal.glow;
+  ctx.fillRect(shipX + 12, y - 1, 2, 2);
+  ctx.fillStyle = pal.accent;
+  ctx.fillRect(shipX - 4, y - 8, 2, 2);
+  ctx.fillRect(shipX - 4, y + 6, 2, 2);
+  ctx.restore();
+}
+
+// ── UPDATE ───────────────────────────────────
+function update(dt) {
+  const speed = state.baseSpeed * (state.boost ? 3.0 : 1.0);
+  state.velocity = speed;
+  if (state.keys['ArrowRight']) state.velocity += 2;
+  if (state.keys['ArrowLeft']) state.velocity = Math.max(0, state.velocity - 2.5);
+  if (state.keys['ArrowUp']) state.targetY -= 1.5;
+  if (state.keys['ArrowDown']) state.targetY += 1.5;
+  state.targetY = Math.max(-60, Math.min(60, state.targetY));
+  state.boost = !!state.keys[' '];
+
+  state.cameraX += state.velocity * dt * 60;
+  state.cameraY += (state.targetY - state.cameraY) * 0.06;
+  state.time += dt;
+
+  // ── SEED FRAME MANAGEMENT ──
+  const currentIdx = Math.max(0, Math.floor(state.cameraX / CFG.SEED_PERIOD));
+  const nextIdx = currentIdx + 1;
+  const rawT = ((state.cameraX % CFG.SEED_PERIOD) + CFG.SEED_PERIOD) % CFG.SEED_PERIOD / CFG.SEED_PERIOD;
+
+  // Advance frames when crossing a waypoint boundary
+  if (currentIdx !== state.seedIdxA) {
+    if (currentIdx === state.seedIdxB) {
+      // Normal forward advance: promote B → A, create new B
+      state.frameA = state.frameB;
+      state.seedIdxA = state.seedIdxB;
+    } else {
+      // Jumped (shouldn't happen in normal play, but handle it)
+      state.seedIdxA = currentIdx;
+      state.frameA = new SeedFrame(seedForWaypoint(currentIdx));
+    }
+    state.seedIdxB = nextIdx;
+    state.frameB = new SeedFrame(seedForWaypoint(nextIdx));
+  }
+
+  state.globalT = rawT;
+}
+
+// ── RENDER ───────────────────────────────────
+function render() {
+  const W = CFG.INTERNAL_W, H = CFG.INTERNAL_H;
+  const p = getMasterPalette();
+
+  const sky = ctx.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, p.sky1);
+  sky.addColorStop(0.6, p.sky2);
+  sky.addColorStop(1, p.ground);
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, H);
+
+  const renderers = [
+    (off) => drawStarfield(off, 0, 0.9),
+    (off) => drawNebula(off, 1),
+    (off) => drawTerrain(off, 2, H * 0.45, 60, 0.004),
+    (off) => drawTerrain(off, 3, H * 0.55, 50, 0.007),
+    (off) => drawStructures(off, 4),
+    (off) => { drawTerrain(off, 5, H * 0.7, 35, 0.012); drawFog(off, 5); },
+    (off) => { drawTerrain(off, 6, H * 0.82, 25, 0.02); drawForegroundParticles(off, 6); },
+  ];
+
+  for (let i = 0; i < CFG.NUM_LAYERS; i++) {
+    if (state.soloLayer >= 0 && state.soloLayer !== i) continue;
+    const offX = state.cameraX * LAYERS[i].speed;
+    ctx.save();
+    ctx.translate(0, state.cameraY * LAYERS[i].speed * 0.3);
+    if (state.soloLayer < 0) ctx.globalAlpha = 0.5 + LAYERS[i].speed * 0.55;
+
+    // Draw procedural layer (terrain layers now internally apply AI texture via clip mask)
+    renderers[i](offX);
+
+    // For sky layers (0, 1): overlay AI texture on the full background area
+    if (i <= 1) {
+      const aiTex = genai.getTexture(i);
+      if (aiTex) {
+        const scrollX = -(offX % W + W) % W;
+        ctx.globalAlpha = i === 0 ? 0.6 : 0.35;
+        ctx.globalCompositeOperation = 'screen';
+        ctx.drawImage(aiTex, scrollX, 0, W, H);
+        ctx.drawImage(aiTex, scrollX + W, 0, W, H);
+        ctx.globalCompositeOperation = 'source-over';
+      }
+    }
+
+    ctx.restore();
+  }
+
+  drawShip();
+
+  // HUD
+  state.frameCount++;
+  const now = performance.now();
+  if (now - state.lastFpsTime > 500) {
+    state.fps = Math.round(state.frameCount / ((now - state.lastFpsTime) / 1000));
+    state.frameCount = 0;
+    state.lastFpsTime = now;
+    document.getElementById('fps').textContent = state.fps;
+    document.getElementById('xpos').textContent = state.cameraX.toFixed(1);
+    document.getElementById('seedA').textContent = seedForWaypoint(state.seedIdxA).toString(16).padStart(4, '0');
+    document.getElementById('seedB').textContent = seedForWaypoint(state.seedIdxB).toString(16).padStart(4, '0');
+    document.getElementById('blendT').textContent = state.globalT.toFixed(3);
+  }
+}
+
+// ── GAME LOOP ────────────────────────────────
+canvas.width = CFG.INTERNAL_W;
+canvas.height = CFG.INTERNAL_H;
+ctx.imageSmoothingEnabled = false;
+
+let lastTime = 0;
+const FIXED_DT = 1 / CFG.TARGET_FPS;
+let accumulator = 0;
+
+function gameLoop(timestamp) {
+  const dt = Math.min((timestamp - lastTime) / 1000, 0.1);
+  lastTime = timestamp;
+  accumulator += dt;
+  while (accumulator >= FIXED_DT) { update(FIXED_DT); accumulator -= FIXED_DT; }
+  render();
+  requestAnimationFrame(gameLoop);
+}
+
+document.addEventListener('keydown', (e) => {
+  state.keys[e.key] = true;
+  if (e.key >= '1' && e.key <= '7') {
+    const l = parseInt(e.key) - 1;
+    state.soloLayer = state.soloLayer === l ? -1 : l;
+    document.getElementById('layercount').textContent = state.soloLayer >= 0 ? `${l+1}/7` : '7';
+  }
+  e.preventDefault();
+});
+document.addEventListener('keyup', (e) => { state.keys[e.key] = false; });
+
+// Allow level seed from URL hash: 7up-demo-2.html#seed=123
+const hashSeed = location.hash.match(/seed=(\d+)/);
+if (hashSeed) CFG.LEVEL_SEED = parseInt(hashSeed[1]);
+document.getElementById('levelseed').textContent = CFG.LEVEL_SEED;
+
+initEngine();
+state.lastFpsTime = performance.now();
+genai.checkServer(); // Non-blocking — engine starts immediately, textures load async
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>

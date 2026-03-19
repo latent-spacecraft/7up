@@ -1,0 +1,17 @@
+# IDE / OS
+.claude/
+.DS_Store
+
+# Python
+.venv/
+
+# Models (large, hosted on HuggingFace)
+models/
+
+# Swift build artifacts
+7up-server/.build/
+ml-stable-diffusion/.build/
+
+# Temp
+*.pyc
+__pycache__/
