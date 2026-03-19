@@ -171,6 +171,43 @@ const CFG = {
   LEVEL_SEED: 42,  // The level seed — share this number to share the world
 };
 
+// ── SPRITE CACHE (IndexedDB) ─────────────────
+// Caches generated sprites/textures by seed so reloading the same level is instant.
+const spriteCache = {
+  db: null,
+  DB_NAME: '7up-sprites',
+  STORE_NAME: 'sprites',
+
+  async open() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(this.DB_NAME, 1);
+      req.onupgradeneeded = () => req.result.createObjectStore(this.STORE_NAME);
+      req.onsuccess = () => { this.db = req.result; resolve(); };
+      req.onerror = () => reject(req.error);
+    });
+  },
+
+  async get(key) {
+    if (!this.db) return null;
+    return new Promise((resolve) => {
+      const tx = this.db.transaction(this.STORE_NAME, 'readonly');
+      const req = tx.objectStore(this.STORE_NAME).get(key);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => resolve(null);
+    });
+  },
+
+  async put(key, value) {
+    if (!this.db) return;
+    return new Promise((resolve) => {
+      const tx = this.db.transaction(this.STORE_NAME, 'readwrite');
+      tx.objectStore(this.STORE_NAME).put(value, key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    });
+  },
+};
+
 // ── SEEDED PRNG ──────────────────────────────
 class SeededRNG {
   constructor(seed) {
@@ -432,51 +469,95 @@ class LissajousEntity {
 
 // ── SPRITE POOL ──────────────────────────────
 // AI-generated sprites shared across entities.
-// Loaded once at level start from /generate-sprites.
+// Cached in IndexedDB so same seed = instant reload.
 const entitySprites = new Map(); // spriteIdx → ImageBitmap
 let spritesLoaded = false;
 
-async function loadEntitySprites() {
-  if (!genai.available) return;
-
-  const prompt = 'pixel art enemy starfighter sprites, various alien spaceships facing left, ' +
-    'side view, sci-fi fighters, glowing engines, detailed, solid black background, spaced apart';
-
-  console.log('[Sprites] Requesting enemy starfighter sprites...');
-  try {
-    const r = await fetch(`${CFG.GENAI_SERVER}/generate-sprites`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        prompt,
-        seed: CFG.LEVEL_SEED * 777,
-        steps: CFG.GENAI_STEPS,
-        guidance_scale: CFG.GENAI_CFG,
-        scheduler: CFG.GENAI_SCHEDULER,
-      }),
-    });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const data = await r.json();
-
-    console.log(`[Sprites] Received ${data.count} sprites in ${data.elapsed.toFixed(2)}s`);
-
-    // Convert base64 PNGs to ImageBitmaps
-    for (let i = 0; i < data.sprites.length; i++) {
-      const s = data.sprites[i];
-      // Skip very small fragments
-      if (s.width < 20 || s.height < 20) continue;
-      const bytes = Uint8Array.from(atob(s.png), c => c.charCodeAt(0));
+// Shared helper: fetch sprites from server or cache, filter bad sizes
+async function fetchSprites(cacheKey, prompt, seed, targetMap, label) {
+  // Try cache first
+  const cached = await spriteCache.get(cacheKey);
+  if (cached) {
+    console.log(`[${label}] Loading ${cached.length} sprites from cache`);
+    for (const pngB64 of cached) {
+      const bytes = Uint8Array.from(atob(pngB64), c => c.charCodeAt(0));
       const blob = new Blob([bytes], { type: 'image/png' });
       const img = await createImageBitmap(blob);
-      entitySprites.set(entitySprites.size, img);
-      console.log(`[Sprites] ✓ sprite ${entitySprites.size - 1}: ${s.width}x${s.height}`);
+      targetMap.set(targetMap.size, img);
     }
-
-    spritesLoaded = true;
-    console.log(`[Sprites] ✓ ${entitySprites.size} sprites ready`);
-  } catch (e) {
-    console.warn('[Sprites] Failed to load:', e.message);
+    console.log(`[${label}] ✓ ${targetMap.size} sprites from cache`);
+    return;
   }
+
+  // Generate fresh
+  console.log(`[${label}] Generating sprites...`);
+  const r = await fetch(`${CFG.GENAI_SERVER}/generate-sprites`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      prompt, seed,
+      steps: CFG.GENAI_STEPS,
+      guidance_scale: CFG.GENAI_CFG,
+      scheduler: CFG.GENAI_SCHEDULER,
+    }),
+  });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const data = await r.json();
+  console.log(`[${label}] Received ${data.count} sprites in ${data.elapsed.toFixed(2)}s`);
+
+  const toCache = [];
+  for (const s of data.sprites) {
+    // Filter: skip tiny fragments and unextracted full-sheets
+    if (s.width < 20 || s.height < 20) continue;
+    if (s.width > 400 && s.height > 400) continue; // Full sheet not properly split
+    const bytes = Uint8Array.from(atob(s.png), c => c.charCodeAt(0));
+    const blob = new Blob([bytes], { type: 'image/png' });
+    const img = await createImageBitmap(blob);
+    targetMap.set(targetMap.size, img);
+    toCache.push(s.png);
+    console.log(`[${label}] ✓ ${targetMap.size - 1}: ${s.width}x${s.height}`);
+  }
+
+  // Persist to IndexedDB
+  if (toCache.length > 0) {
+    await spriteCache.put(cacheKey, toCache);
+    console.log(`[${label}] Cached ${toCache.length} sprites to IndexedDB`);
+  }
+}
+
+async function loadEntitySprites() {
+  if (!genai.available) return;
+  try {
+    await fetchSprites(
+      `entities-${CFG.LEVEL_SEED}`,
+      'pixel art enemy starfighter sprites, various alien spaceships facing left, ' +
+      'side view, sci-fi fighters, glowing engines, detailed, solid black background, spaced apart',
+      CFG.LEVEL_SEED * 777,
+      entitySprites,
+      'Fighters'
+    );
+    spritesLoaded = true;
+  } catch (e) { console.warn('[Fighters] Failed:', e.message); }
+}
+
+// ── STRUCTURE SPRITES ────────────────────────
+const structureSprites = new Map();
+let structureSpritesLoaded = false;
+
+async function loadStructureSprites() {
+  if (!genai.available) return;
+  try {
+    await fetchSprites(
+      `structures-${CFG.LEVEL_SEED}`,
+      '6 individual pixel art sci-fi towers, each separated by empty black space, ' +
+      'futuristic buildings, neon windows, cyberpunk, isolated objects on pure black background, ' +
+      'spaced far apart, detailed, glowing',
+      CFG.LEVEL_SEED * 555,
+      structureSprites,
+      'Buildings'
+    );
+    structureSpritesLoaded = true;
+  } catch (e) { console.warn('[Buildings] Failed:', e.message); }
 }
 
 // Spawn entities along the world — seeded deterministically
@@ -662,9 +743,9 @@ function drawStructures(offX, layerIdx) {
   const pal = getLayerPalette(layerIdx);
   const lt = layerT(layerIdx);
   const W = CFG.INTERNAL_W, H = CFG.INTERNAL_H;
+  const hasSprites = structureSprites.size > 0;
 
   ctx.save();
-  // Crossfade two sets of structures
   for (let pass = 0; pass < 2; pass++) {
     const frame = pass === 0 ? state.frameA : state.frameB;
     const pAlpha = pass === 0 ? (1 - lt) : lt;
@@ -685,8 +766,29 @@ function drawStructures(offX, layerIdx) {
       const width = srng.range(8, 25);
       const baseY = H * 0.55 + getLayerNoise(layerIdx, worldX * 0.008, 0.5) * 40;
 
-      ctx.globalAlpha = 0.7 * pAlpha;
+      ctx.globalAlpha = 0.8 * pAlpha;
 
+      if (hasSprites) {
+        // AI sprite building — pick from pool based on structure index
+        const spriteIdx = ((si * 13 + frame.seed) & 0x7fffffff) % structureSprites.size;
+        const sprite = structureSprites.get(spriteIdx);
+        if (sprite) {
+          // Scale sprite to match procedural height, preserve aspect ratio
+          const aspect = sprite.width / sprite.height;
+          const drawH = height * 1.5;
+          const drawW = drawH * aspect;
+          // Anchor at bottom center (baseY is ground level)
+          ctx.drawImage(sprite, screenX - drawW / 2, baseY - drawH, drawW, drawH);
+
+          // Subtle glow at base
+          ctx.globalAlpha = pAlpha * (0.2 + 0.15 * Math.sin(state.time * 2 + si));
+          ctx.fillStyle = pal.glow;
+          ctx.fillRect(screenX - drawW * 0.3, baseY - 2, drawW * 0.6, 2);
+          continue;
+        }
+      }
+
+      // Procedural fallback
       if (type === 0) {
         const grad = ctx.createLinearGradient(screenX, baseY - height, screenX, baseY);
         grad.addColorStop(0, pal.accent); grad.addColorStop(1, pal.near);
@@ -798,14 +900,15 @@ const genai = {
         console.log(`[GenAI] Server connected — generating level textures for seed ${CFG.LEVEL_SEED}`);
         document.getElementById('layercount').textContent = '7+AI';
         this.generateLevel(CFG.LEVEL_SEED);
-        // Load enemy starfighter sprites
+        // Load AI sprites — entity fighters and structure buildings
         loadEntitySprites();
+        loadStructureSprites();
       }
     } catch { /* server not running — procedural fallback */ }
   },
 
-  // Generate all 7 layer textures for a level seed
-  generateLevel(levelSeed) {
+  // Generate all 7 layer textures for a level seed (cached in IndexedDB)
+  async generateLevel(levelSeed) {
     for (let i = 0; i < CFG.NUM_LAYERS; i++) {
       this._request(i, levelSeed);
     }
@@ -815,42 +918,55 @@ const genai = {
     return this.textures[layerIdx];
   },
 
-  _request(layerIdx, levelSeed) {
+  async _request(layerIdx, levelSeed) {
     if (this.pending.has(layerIdx) || this.textures[layerIdx]) return;
     this.pending.add(layerIdx);
 
-    // Each layer gets a deterministic seed derived from the level seed
     const seed = levelSeed * 7 + layerIdx * 1337;
+    const cacheKey = `layer-${levelSeed}-${layerIdx}`;
+
+    // Try cache
+    const cached = await spriteCache.get(cacheKey);
+    if (cached) {
+      const blob = new Blob([cached], { type: 'image/png' });
+      this.textures[layerIdx] = await createImageBitmap(blob);
+      this.pending.delete(layerIdx);
+      this.loaded++;
+      console.log(`[GenAI] ✓ L${layerIdx} from cache (${this.loaded}/${CFG.NUM_LAYERS})`);
+      return;
+    }
+
+    // Generate fresh
     const prompt = this.LAYER_PROMPTS[layerIdx];
+    console.log(`[GenAI] L${layerIdx}: generating...`);
 
-    console.log(`[GenAI] L${layerIdx}: "${prompt.slice(0, 50)}..." seed=${seed}`);
+    try {
+      const r = await fetch(`${CFG.GENAI_SERVER}/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt, seed,
+          width: 512, height: 512,
+          steps: CFG.GENAI_STEPS,
+          guidance_scale: CFG.GENAI_CFG,
+          scheduler: CFG.GENAI_SCHEDULER,
+        }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const arrayBuf = await r.arrayBuffer();
 
-    fetch(`${CFG.GENAI_SERVER}/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        prompt, seed,
-        width: 512, height: 512,
-        steps: CFG.GENAI_STEPS,
-        guidance_scale: CFG.GENAI_CFG,
-        scheduler: CFG.GENAI_SCHEDULER,
-      }),
-    })
-    .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.blob(); })
-    .then(blob => createImageBitmap(blob))
-    .then(img => {
-      this.textures[layerIdx] = img;
+      // Cache the raw PNG bytes
+      await spriteCache.put(cacheKey, new Uint8Array(arrayBuf));
+
+      const blob = new Blob([arrayBuf], { type: 'image/png' });
+      this.textures[layerIdx] = await createImageBitmap(blob);
       this.pending.delete(layerIdx);
       this.loaded++;
       console.log(`[GenAI] ✓ L${layerIdx} ready (${this.loaded}/${CFG.NUM_LAYERS})`);
-      if (this.loaded === CFG.NUM_LAYERS) {
-        console.log(`[GenAI] ✓ All textures loaded for level seed ${levelSeed}`);
-      }
-    })
-    .catch(e => {
+    } catch (e) {
       this.pending.delete(layerIdx);
       console.warn(`[GenAI] ✗ L${layerIdx} failed:`, e.message);
-    });
+    }
   },
 };
 
@@ -1048,7 +1164,8 @@ document.getElementById('levelseed').textContent = CFG.LEVEL_SEED;
 
 initEngine();
 state.lastFpsTime = performance.now();
-genai.checkServer(); // Non-blocking — engine starts immediately, textures load async
+// Open sprite cache then check server
+spriteCache.open().then(() => genai.checkServer()).catch(() => genai.checkServer());
 requestAnimationFrame(gameLoop);
 </script>
 </body>
