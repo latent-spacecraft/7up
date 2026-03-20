@@ -1,0 +1,759 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>7UP — Sprite Extractor</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;700&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a0f; color: #e0e0e0;
+    font-family: 'JetBrains Mono', monospace;
+    min-height: 100vh; display: flex; flex-direction: column;
+  }
+  header {
+    padding: 12px 20px; display: flex; justify-content: space-between; align-items: center;
+    border-bottom: 1px solid #1a1a2a;
+  }
+  header h1 {
+    font-size: 16px; font-weight: 700;
+    background: linear-gradient(135deg, #ff6b6b, #ffa94d, #ffd43b);
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent; letter-spacing: 3px;
+  }
+  .header-actions { display: flex; gap: 8px; align-items: center; }
+
+  main { flex: 1; display: flex; overflow: hidden; }
+
+  /* Left panel: generation controls */
+  .panel-left {
+    width: 280px; min-width: 280px; padding: 16px;
+    border-right: 1px solid #1a1a2a; overflow-y: auto;
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .field { display: flex; flex-direction: column; gap: 3px; }
+  .field label { font-size: 9px; color: #555; text-transform: uppercase; letter-spacing: 1px; }
+  textarea, input[type="text"], input[type="number"] {
+    background: #14141f; border: 1px solid #2a2a3a; border-radius: 3px;
+    color: #e0e0e0; font-family: inherit; font-size: 11px;
+    padding: 6px 8px; outline: none; width: 100%;
+  }
+  textarea { resize: vertical; min-height: 60px; }
+  textarea:focus, input:focus { border-color: #ffa94d; }
+  .row { display: flex; gap: 8px; }
+  .row > .field { flex: 1; }
+  button {
+    font-family: inherit; font-size: 11px; font-weight: 700;
+    padding: 8px 16px; border: none; border-radius: 3px; cursor: pointer; letter-spacing: 1px;
+  }
+  .btn-primary { background: linear-gradient(135deg, #ff6b6b, #ffa94d); color: #0a0a0f; }
+  .btn-secondary { background: #1a1a2a; color: #888; border: 1px solid #2a2a3a; }
+  .btn-danger { background: #3a1a1a; color: #ff6b6b; border: 1px solid #4a2a2a; }
+  .btn-small { padding: 5px 10px; font-size: 10px; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button:hover:not(:disabled) { filter: brightness(1.1); }
+
+  .section-title {
+    font-size: 9px; font-weight: 700; color: #555;
+    text-transform: uppercase; letter-spacing: 2px; margin-top: 8px;
+  }
+
+  /* Center: canvas workspace */
+  .workspace {
+    flex: 1; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; padding: 16px; position: relative; overflow: auto;
+  }
+  #canvas-wrap {
+    position: relative; border: 1px solid #2a2a3a; border-radius: 4px;
+    background: repeating-conic-gradient(#1a1a2a 0% 25%, #14141f 0% 50%) 50%/16px 16px;
+    cursor: crosshair;
+  }
+  #source-canvas { display: block; }
+  #overlay-canvas {
+    position: absolute; top: 0; left: 0;
+    pointer-events: none;
+  }
+  .canvas-hint {
+    font-size: 10px; color: #444; margin-top: 8px; text-align: center;
+  }
+  .mode-indicator {
+    font-size: 10px; padding: 4px 10px; border-radius: 3px;
+    background: #1a1a2a; color: #ffa94d; border: 1px solid #2a2a3a;
+  }
+
+  /* Right panel: extracted sprites */
+  .panel-right {
+    width: 240px; min-width: 240px; padding: 16px;
+    border-left: 1px solid #1a1a2a; overflow-y: auto;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .sprite-card {
+    background: #12121a; border: 1px solid #1a1a2a; border-radius: 4px;
+    overflow: hidden; cursor: pointer; transition: border-color 0.15s;
+  }
+  .sprite-card:hover { border-color: #ffa94d; }
+  .sprite-card.selected { border-color: #51cf66; }
+  .sprite-card .sprite-thumb {
+    padding: 8px; display: flex; align-items: center; justify-content: center;
+    background: repeating-conic-gradient(#1a1a2a 0% 25%, #14141f 0% 50%) 50%/8px 8px;
+    min-height: 60px;
+  }
+  .sprite-card .sprite-thumb img { max-width: 100%; max-height: 80px; }
+  .sprite-card .sprite-info {
+    padding: 6px 8px; font-size: 9px; color: #666;
+    border-top: 1px solid #1a1a2a;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .sprite-card .sprite-info .name { color: #aaa; }
+  .sprite-card .sprite-actions { display: flex; gap: 4px; }
+
+  .status-bar {
+    padding: 6px 20px; border-top: 1px solid #1a1a2a;
+    font-size: 10px; color: #444; display: flex; gap: 20px;
+  }
+  .status-bar .val { color: #9775fa; }
+  .status-bar .ok { color: #51cf66; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>SPRITE EXTRACTOR</h1>
+  <div class="header-actions">
+    <span class="mode-indicator" id="mode-label">DRAW SELECTION</span>
+    <button class="btn-secondary btn-small" id="btn-auto">AUTO EXTRACT (Vision)</button>
+    <button class="btn-secondary btn-small" id="btn-export-all">EXPORT ALL</button>
+  </div>
+</header>
+
+<main>
+  <div class="panel-left">
+    <div class="section-title">Generate</div>
+    <div class="field">
+      <label>Prompt</label>
+      <textarea id="prompt">pixel art enemy starfighter sprites, various alien spaceships facing left, side view, sci-fi fighters, glowing engines, detailed, solid black background, spaced apart</textarea>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label>Seed</label>
+        <input type="number" id="seed" value="42" />
+      </div>
+      <div class="field" style="flex:0;align-self:end;">
+        <button class="btn-secondary btn-small" id="btn-dice">DICE</button>
+      </div>
+    </div>
+    <button class="btn-primary" id="btn-generate">GENERATE</button>
+
+    <div class="section-title">Selection Tool</div>
+    <p style="font-size:9px;color:#444;line-height:1.5;">
+      Click and drag to select. Background is auto-detected from edges.
+    </p>
+    <div class="row">
+      <button class="btn-secondary btn-small" id="btn-mode-rect">RECT</button>
+      <button class="btn-secondary btn-small" id="btn-mode-lasso">LASSO</button>
+    </div>
+    <div class="field">
+      <label>BG Removal</label>
+      <select id="bg-mode">
+        <option value="flood" selected>Flood fill from edges (best)</option>
+        <option value="black">Brightness threshold</option>
+        <option value="none">Keep as-is (no removal)</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Tolerance <span class="val" id="tol-val">32</span></label>
+      <input type="range" id="bg-threshold" min="5" max="100" value="32" />
+    </div>
+    <div class="field">
+      <label>Edge Feather <span class="val" id="feather-val">2</span>px</label>
+      <input type="range" id="bg-feather" min="0" max="8" value="2" />
+    </div>
+
+    <div class="section-title">Batch</div>
+    <button class="btn-secondary btn-small" id="btn-grid-split">GRID SPLIT (auto-detect)</button>
+
+    <div class="section-title">Server</div>
+    <div class="field">
+      <label>Model</label>
+      <select id="gen-model">
+        <option value="pixel" selected>Pixnite15 (pixel art)</option>
+        <option value="sdxl">SDXL Turbo (photorealistic)</option>
+      </select>
+    </div>
+    <div class="field">
+      <input type="text" id="server-url" value="http://localhost:8090" />
+    </div>
+  </div>
+
+  <div class="workspace">
+    <div id="canvas-wrap">
+      <canvas id="source-canvas" width="512" height="512"></canvas>
+      <canvas id="overlay-canvas" width="512" height="512"></canvas>
+    </div>
+    <div class="canvas-hint" id="hint">Generate an image or drag one onto the canvas</div>
+  </div>
+
+  <div class="panel-right">
+    <div class="section-title">Extracted Sprites (<span id="sprite-count">0</span>)</div>
+    <div id="sprite-list"></div>
+  </div>
+</main>
+
+<div class="status-bar">
+  <span>SERVER <span id="st-server" class="val">--</span></span>
+  <span>IMAGE <span id="st-image" class="val">--</span></span>
+  <span>SPRITES <span id="st-sprites" class="val">0</span></span>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const sourceCanvas = $('#source-canvas');
+const overlayCanvas = $('#overlay-canvas');
+const srcCtx = sourceCanvas.getContext('2d');
+const ovCtx = overlayCanvas.getContext('2d');
+
+let sourceImage = null;  // The generated/loaded CGImage as ImageBitmap
+let extractedSprites = []; // { canvas, name, x, y, w, h }
+let selectionMode = 'rect'; // 'rect' or 'lasso'
+let drawing = false;
+let selStart = null;
+let lassoPoints = [];
+
+// ── Generation ──────────────────────────────
+async function generate() {
+  const btn = $('#btn-generate');
+  btn.disabled = true; btn.textContent = 'GENERATING...';
+  try {
+    const r = await fetch(`${$('#server-url').value}/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: $('#prompt').value,
+        seed: parseInt($('#seed').value) || 42,
+        model: $('#gen-model').value,
+        // Pixel art model needs more steps + higher CFG
+        steps: $('#gen-model').value === 'pixel' ? 20 : 2,
+        guidance_scale: $('#gen-model').value === 'pixel' ? 7.5 : 1.0,
+        scheduler: $('#gen-model').value === 'pixel' ? 'dpmSolverMultistep' : 'eulerAncestral',
+        width: 512, height: 512,
+      }),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const blob = await r.blob();
+    sourceImage = await createImageBitmap(blob);
+    sourceCanvas.width = sourceImage.width;
+    sourceCanvas.height = sourceImage.height;
+    overlayCanvas.width = sourceImage.width;
+    overlayCanvas.height = sourceImage.height;
+    srcCtx.drawImage(sourceImage, 0, 0);
+    ovCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+    $('#st-image').textContent = `${sourceImage.width}x${sourceImage.height}`;
+    $('#hint').textContent = 'Draw selections or use Auto Extract';
+  } catch (e) {
+    $('#hint').textContent = `Error: ${e.message}`;
+  }
+  btn.disabled = false; btn.textContent = 'GENERATE';
+}
+
+// ── Auto Extract (Vision) ───────────────────
+async function autoExtract() {
+  if (!sourceImage) return;
+  const btn = $('#btn-auto');
+  btn.disabled = true; btn.textContent = '...';
+
+  // Re-encode current canvas as PNG and send to /generate-sprites
+  // But we need a way to send an existing image... let's use /generate with remove_background
+  // Actually, let's just call the server with the same prompt/seed
+  try {
+    const r = await fetch(`${$('#server-url').value}/generate-sprites`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: $('#prompt').value,
+        seed: parseInt($('#seed').value) || 42,
+        model: $('#gen-model').value,
+        steps: $('#gen-model').value === 'pixel' ? 20 : 2,
+        guidance_scale: $('#gen-model').value === 'pixel' ? 7.5 : 1.0,
+        scheduler: $('#gen-model').value === 'pixel' ? 'dpmSolverMultistep' : 'eulerAncestral',
+      }),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+
+    for (const s of data.sprites) {
+      if (s.width < 15 || s.height < 15) continue;
+      if (s.width > 450 && s.height > 450) continue;
+      const bytes = Uint8Array.from(atob(s.png), c => c.charCodeAt(0));
+      const blob = new Blob([bytes], { type: 'image/png' });
+      const img = await createImageBitmap(blob);
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width; canvas.height = img.height;
+      canvas.getContext('2d').drawImage(img, 0, 0);
+      addSprite(canvas, `auto-${extractedSprites.length}`, s.x, s.y, s.width, s.height);
+    }
+    drawOverlay();
+  } catch (e) {
+    console.error('Auto extract failed:', e);
+  }
+  btn.disabled = false; btn.textContent = 'AUTO EXTRACT (Vision)';
+}
+
+// ── Manual Selection ────────────────────────
+function getCanvasPos(e) {
+  const rect = sourceCanvas.getBoundingClientRect();
+  const scaleX = sourceCanvas.width / rect.width;
+  const scaleY = sourceCanvas.height / rect.height;
+  return {
+    x: (e.clientX - rect.left) * scaleX,
+    y: (e.clientY - rect.top) * scaleY,
+  };
+}
+
+$('#canvas-wrap').addEventListener('mousedown', e => {
+  if (!sourceImage) return;
+  drawing = true;
+  const pos = getCanvasPos(e);
+  if (selectionMode === 'rect') {
+    selStart = pos;
+  } else {
+    lassoPoints = [pos];
+  }
+});
+
+$('#canvas-wrap').addEventListener('mousemove', e => {
+  if (!drawing || !sourceImage) return;
+  const pos = getCanvasPos(e);
+  ovCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+  drawOverlay();
+
+  ovCtx.strokeStyle = '#ffa94d';
+  ovCtx.lineWidth = 1;
+  ovCtx.setLineDash([4, 4]);
+
+  if (selectionMode === 'rect' && selStart) {
+    const x = Math.min(selStart.x, pos.x);
+    const y = Math.min(selStart.y, pos.y);
+    const w = Math.abs(pos.x - selStart.x);
+    const h = Math.abs(pos.y - selStart.y);
+    ovCtx.strokeRect(x, y, w, h);
+  } else if (selectionMode === 'lasso') {
+    lassoPoints.push(pos);
+    ovCtx.beginPath();
+    ovCtx.moveTo(lassoPoints[0].x, lassoPoints[0].y);
+    for (const p of lassoPoints) ovCtx.lineTo(p.x, p.y);
+    ovCtx.stroke();
+  }
+  ovCtx.setLineDash([]);
+});
+
+$('#canvas-wrap').addEventListener('mouseup', e => {
+  if (!drawing || !sourceImage) return;
+  drawing = false;
+  const pos = getCanvasPos(e);
+
+  if (selectionMode === 'rect' && selStart) {
+    const x = Math.round(Math.min(selStart.x, pos.x));
+    const y = Math.round(Math.min(selStart.y, pos.y));
+    const w = Math.round(Math.abs(pos.x - selStart.x));
+    const h = Math.round(Math.abs(pos.y - selStart.y));
+    if (w > 5 && h > 5) extractRegion(x, y, w, h);
+    selStart = null;
+  } else if (selectionMode === 'lasso' && lassoPoints.length > 3) {
+    extractLasso(lassoPoints);
+    lassoPoints = [];
+  }
+});
+
+function extractRegion(x, y, w, h) {
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(sourceCanvas, x, y, w, h, 0, 0, w, h);
+  removeBG(ctx, w, h);
+  addSprite(canvas, `sel-${extractedSprites.length}`, x, y, w, h);
+  drawOverlay();
+}
+
+function extractLasso(points) {
+  // Bounding box
+  let minX = Infinity, minY = Infinity, maxX = 0, maxY = 0;
+  for (const p of points) {
+    minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y);
+  }
+  const x = Math.round(minX), y = Math.round(minY);
+  const w = Math.round(maxX - minX), h = Math.round(maxY - minY);
+  if (w < 5 || h < 5) return;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+
+  // Clip to lasso path
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(points[0].x - x, points[0].y - y);
+  for (const p of points) ctx.lineTo(p.x - x, p.y - y);
+  ctx.closePath();
+  ctx.clip();
+  ctx.drawImage(sourceCanvas, x, y, w, h, 0, 0, w, h);
+  ctx.restore();
+
+  // Clear outside the lasso
+  const imgData = ctx.getImageData(0, 0, w, h);
+  const tempCanvas = document.createElement('canvas');
+  tempCanvas.width = w; tempCanvas.height = h;
+  const tempCtx = tempCanvas.getContext('2d');
+  tempCtx.beginPath();
+  tempCtx.moveTo(points[0].x - x, points[0].y - y);
+  for (const p of points) tempCtx.lineTo(p.x - x, p.y - y);
+  tempCtx.closePath();
+  tempCtx.fillStyle = 'white';
+  tempCtx.fill();
+  const maskData = tempCtx.getImageData(0, 0, w, h);
+  for (let i = 0; i < imgData.data.length; i += 4) {
+    if (maskData.data[i] === 0) imgData.data[i + 3] = 0; // Outside lasso = transparent
+  }
+  ctx.putImageData(imgData, 0, 0);
+
+  removeBG(ctx, w, h);
+  addSprite(canvas, `lasso-${extractedSprites.length}`, x, y, w, h);
+  drawOverlay();
+}
+
+// ── Background Removal ──────────────────────
+
+function removeBG(ctx, w, h) {
+  const mode = $('#bg-mode').value;
+  if (mode === 'none') return;
+
+  const tolerance = parseInt($('#bg-threshold').value);
+  const feather = parseInt($('#bg-feather').value);
+  const imgData = ctx.getImageData(0, 0, w, h);
+  const d = imgData.data;
+
+  if (mode === 'flood') {
+    // Flood fill from all edges — the connected background region
+    // Sample the reference color from the corners (average)
+    const corners = [
+      [0, 0], [w-1, 0], [0, h-1], [w-1, h-1],
+      [Math.floor(w/2), 0], [Math.floor(w/2), h-1],
+      [0, Math.floor(h/2)], [w-1, Math.floor(h/2)],
+    ];
+    let rRef = 0, gRef = 0, bRef = 0, count = 0;
+    for (const [cx, cy] of corners) {
+      const idx = (cy * w + cx) * 4;
+      rRef += d[idx]; gRef += d[idx+1]; bRef += d[idx+2]; count++;
+    }
+    rRef = Math.round(rRef / count);
+    gRef = Math.round(gRef / count);
+    bRef = Math.round(bRef / count);
+
+    // BFS flood fill from all edge pixels
+    const visited = new Uint8Array(w * h); // 0=unvisited, 1=bg, 2=edge
+    const queue = [];
+
+    // Seed from all border pixels
+    for (let x = 0; x < w; x++) {
+      queue.push(x);            // top row
+      queue.push((h-1) * w + x); // bottom row
+    }
+    for (let y = 1; y < h - 1; y++) {
+      queue.push(y * w);          // left col
+      queue.push(y * w + (w-1));  // right col
+    }
+
+    // Mark initial seeds
+    for (const idx of queue) visited[idx] = 1;
+
+    // BFS with color tolerance
+    const tolSq = tolerance * tolerance * 3; // tolerance in RGB space
+    let head = 0;
+    while (head < queue.length) {
+      const pixIdx = queue[head++];
+      const px = pixIdx % w, py = Math.floor(pixIdx / w);
+      const i4 = pixIdx * 4;
+      const dr = d[i4] - rRef, dg = d[i4+1] - gRef, db = d[i4+2] - bRef;
+      const distSq = dr*dr + dg*dg + db*db;
+
+      if (distSq > tolSq) {
+        visited[pixIdx] = 2; // Edge — close to BG but not quite
+        continue;
+      }
+
+      // Spread to neighbors (4-connected)
+      const neighbors = [];
+      if (px > 0)   neighbors.push(pixIdx - 1);
+      if (px < w-1) neighbors.push(pixIdx + 1);
+      if (py > 0)   neighbors.push(pixIdx - w);
+      if (py < h-1) neighbors.push(pixIdx + w);
+
+      for (const n of neighbors) {
+        if (visited[n] === 0) {
+          visited[n] = 1;
+          queue.push(n);
+        }
+      }
+    }
+
+    // Apply: background pixels → transparent, edge pixels → feathered
+    for (let i = 0; i < visited.length; i++) {
+      if (visited[i] === 1) {
+        d[i*4+3] = 0; // Full transparent
+      }
+    }
+
+    // Feather: dilate transparency into non-background pixels near edges
+    if (feather > 0) {
+      const alpha = new Float32Array(w * h);
+      for (let i = 0; i < visited.length; i++) {
+        alpha[i] = visited[i] === 1 ? 0 : 1;
+      }
+      // Gaussian-ish blur on the alpha mask
+      for (let pass = 0; pass < feather; pass++) {
+        const next = new Float32Array(alpha);
+        for (let y = 1; y < h-1; y++) {
+          for (let x = 1; x < w-1; x++) {
+            const idx = y * w + x;
+            if (visited[idx] === 1) continue; // Already transparent
+            const avg = (alpha[idx-1] + alpha[idx+1] + alpha[idx-w] + alpha[idx+w]) / 4;
+            next[idx] = Math.min(alpha[idx], (alpha[idx] + avg) / 2);
+          }
+        }
+        alpha.set(next);
+      }
+      for (let i = 0; i < alpha.length; i++) {
+        d[i*4+3] = Math.round(alpha[i] * d[i*4+3]);
+      }
+    }
+
+  } else if (mode === 'black') {
+    // Simple brightness threshold
+    for (let i = 0; i < d.length; i += 4) {
+      const brightness = (d[i] + d[i+1] + d[i+2]) / 3;
+      if (brightness < tolerance) {
+        d[i+3] = 0;
+      } else if (brightness < tolerance + 20) {
+        d[i+3] = Math.round(((brightness - tolerance) / 20) * d[i+3]);
+      }
+    }
+  }
+
+  ctx.putImageData(imgData, 0, 0);
+}
+
+// ── Grid Split: auto-detect grid of sprites ──
+function gridSplit() {
+  if (!sourceImage) return;
+  const w = sourceCanvas.width, h = sourceCanvas.height;
+  const imgData = srcCtx.getImageData(0, 0, w, h);
+  const d = imgData.data;
+  const tolerance = parseInt($('#bg-threshold').value);
+
+  // Sample BG color from corners
+  const corners = [[0,0],[w-1,0],[0,h-1],[w-1,h-1]];
+  let rRef = 0, gRef = 0, bRef = 0;
+  for (const [cx,cy] of corners) {
+    const i = (cy * w + cx) * 4;
+    rRef += d[i]; gRef += d[i+1]; bRef += d[i+2];
+  }
+  rRef /= 4; gRef /= 4; bRef /= 4;
+  const tolSq = tolerance * tolerance * 3;
+
+  function isBG(x, y) {
+    const i = (y * w + x) * 4;
+    const dr = d[i]-rRef, dg = d[i+1]-gRef, db = d[i+2]-bRef;
+    return dr*dr + dg*dg + db*db < tolSq;
+  }
+
+  // Scan columns to find vertical gaps (columns that are all background)
+  const colIsBG = new Array(w);
+  for (let x = 0; x < w; x++) {
+    let bgCount = 0;
+    for (let y = 0; y < h; y += 2) { if (isBG(x, y)) bgCount++; }
+    colIsBG[x] = bgCount > (h/2) * 0.85;
+  }
+
+  // Scan rows to find horizontal gaps
+  const rowIsBG = new Array(h);
+  for (let y = 0; y < h; y++) {
+    let bgCount = 0;
+    for (let x = 0; x < w; x += 2) { if (isBG(x, y)) bgCount++; }
+    rowIsBG[y] = bgCount > (w/2) * 0.85;
+  }
+
+  // Find contiguous non-BG column ranges
+  const colRanges = findRanges(colIsBG, w);
+  const rowRanges = findRanges(rowIsBG, h);
+
+  console.log(`[GridSplit] Found ${colRanges.length} columns x ${rowRanges.length} rows`);
+
+  // Extract each cell
+  for (const [ry, rh] of rowRanges) {
+    for (const [rx, rw] of colRanges) {
+      if (rw < 15 || rh < 15) continue;
+      extractRegion(rx, ry, rw, rh);
+    }
+  }
+}
+
+function findRanges(isBG, len) {
+  const ranges = [];
+  let start = -1;
+  for (let i = 0; i < len; i++) {
+    if (!isBG[i] && start === -1) start = i;
+    if ((isBG[i] || i === len-1) && start !== -1) {
+      const end = isBG[i] ? i : i + 1;
+      ranges.push([start, end - start]);
+      start = -1;
+    }
+  }
+  return ranges;
+}
+
+// ── Sprite Management ───────────────────────
+function addSprite(canvas, name, x, y, w, h) {
+  extractedSprites.push({ canvas, name, x, y, w: canvas.width, h: canvas.height });
+  renderSpriteList();
+}
+
+function removeSprite(idx) {
+  extractedSprites.splice(idx, 1);
+  renderSpriteList();
+  drawOverlay();
+}
+
+function renderSpriteList() {
+  const list = $('#sprite-list');
+  list.innerHTML = '';
+  $('#sprite-count').textContent = extractedSprites.length;
+  $('#st-sprites').textContent = extractedSprites.length;
+
+  extractedSprites.forEach((sprite, i) => {
+    const card = document.createElement('div');
+    card.className = 'sprite-card';
+    card.innerHTML = `
+      <div class="sprite-thumb"></div>
+      <div class="sprite-info">
+        <span class="name">${sprite.name} (${sprite.w}x${sprite.h})</span>
+        <div class="sprite-actions">
+          <button class="btn-secondary btn-small save-btn" title="Save PNG">DL</button>
+          <button class="btn-danger btn-small del-btn" title="Delete">X</button>
+        </div>
+      </div>
+    `;
+    // Thumbnail
+    const img = new Image();
+    img.src = sprite.canvas.toDataURL('image/png');
+    card.querySelector('.sprite-thumb').appendChild(img);
+
+    // Save individual sprite
+    card.querySelector('.save-btn').addEventListener('click', e => {
+      e.stopPropagation();
+      const a = document.createElement('a');
+      a.href = sprite.canvas.toDataURL('image/png');
+      a.download = `${sprite.name}.png`;
+      a.click();
+    });
+
+    // Delete
+    card.querySelector('.del-btn').addEventListener('click', e => {
+      e.stopPropagation();
+      removeSprite(i);
+    });
+
+    list.appendChild(card);
+  });
+}
+
+// ── Overlay Drawing ─────────────────────────
+function drawOverlay() {
+  ovCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+  // Draw existing extraction regions
+  for (const s of extractedSprites) {
+    ovCtx.strokeStyle = '#51cf66';
+    ovCtx.lineWidth = 1;
+    ovCtx.setLineDash([3, 3]);
+    ovCtx.strokeRect(s.x, s.y, s.w, s.h);
+    ovCtx.setLineDash([]);
+    ovCtx.fillStyle = '#51cf66';
+    ovCtx.font = '9px JetBrains Mono';
+    ovCtx.fillText(s.name, s.x + 2, s.y - 3);
+  }
+}
+
+// ── Export All ───────────────────────────────
+function exportAll() {
+  if (extractedSprites.length === 0) return;
+  // Export as a JSON manifest + individual PNGs zipped, or just download each
+  for (const sprite of extractedSprites) {
+    const a = document.createElement('a');
+    a.href = sprite.canvas.toDataURL('image/png');
+    a.download = `${sprite.name}.png`;
+    a.click();
+  }
+}
+
+// ── Server Check ────────────────────────────
+async function checkServer() {
+  try {
+    const r = await fetch(`${$('#server-url').value}/health`, { signal: AbortSignal.timeout(2000) });
+    if (r.ok) { $('#st-server').textContent = 'OK'; $('#st-server').className = 'ok'; return; }
+  } catch {}
+  $('#st-server').textContent = 'OFFLINE'; $('#st-server').className = 'val';
+}
+
+// ── Drag & Drop Images ──────────────────────
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('drop', e => {
+  e.preventDefault();
+  const file = e.dataTransfer.files[0];
+  if (file && file.type.startsWith('image/')) {
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const blob = new Blob([reader.result], { type: file.type });
+      sourceImage = await createImageBitmap(blob);
+      sourceCanvas.width = sourceImage.width;
+      sourceCanvas.height = sourceImage.height;
+      overlayCanvas.width = sourceImage.width;
+      overlayCanvas.height = sourceImage.height;
+      srcCtx.drawImage(sourceImage, 0, 0);
+      ovCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+      $('#st-image').textContent = `${sourceImage.width}x${sourceImage.height}`;
+      $('#hint').textContent = 'Image loaded — draw selections or Auto Extract';
+    };
+    reader.readAsArrayBuffer(file);
+  }
+});
+
+// ── Wiring ──────────────────────────────────
+$('#btn-generate').addEventListener('click', generate);
+$('#btn-auto').addEventListener('click', autoExtract);
+$('#btn-export-all').addEventListener('click', exportAll);
+$('#btn-dice').addEventListener('click', () => { $('#seed').value = Math.floor(Math.random() * 2147483647); });
+$('#btn-mode-rect').addEventListener('click', () => {
+  selectionMode = 'rect';
+  $('#mode-label').textContent = 'DRAW RECTANGLE';
+});
+$('#btn-mode-lasso').addEventListener('click', () => {
+  selectionMode = 'lasso';
+  $('#mode-label').textContent = 'DRAW LASSO';
+});
+$('#btn-grid-split').addEventListener('click', gridSplit);
+$('#bg-threshold').addEventListener('input', () => {
+  $('#tol-val').textContent = $('#bg-threshold').value;
+});
+$('#bg-feather').addEventListener('input', () => {
+  $('#feather-val').textContent = $('#bg-feather').value;
+});
+
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); generate(); }
+  if ((e.ctrlKey || e.metaKey) && e.key === 'e') { e.preventDefault(); exportAll(); }
+});
+
+checkServer();
+</script>
+</body>
+</html>

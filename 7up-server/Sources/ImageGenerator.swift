@@ -6,23 +6,42 @@ import ImageIO
 import StableDiffusion
 import Vision
 
-/// Thread-safe wrapper around StableDiffusionXLPipeline.
-/// Uses an actor to serialize access to the non-Sendable pipeline.
+/// Thread-safe wrapper around StableDiffusion pipelines.
+/// Auto-detects SD 1.5 vs SDXL based on model files present.
 actor ImageGenerator {
-    private let pipeline: StableDiffusionXLPipeline
+    private let pipeline: any StableDiffusionPipelineProtocol
+    private let isXL: Bool
     private let ciContext = CIContext()
 
     init(modelPath: String) throws {
         let resourceURL = URL(fileURLWithPath: modelPath)
         let config = MLModelConfiguration()
         config.computeUnits = .cpuAndNeuralEngine
-        self.pipeline = try StableDiffusionXLPipeline(
-            resourcesAt: resourceURL,
-            configuration: config,
-            reduceMemory: false
+
+        // Auto-detect: SDXL has TextEncoder2.mlmodelc, SD 1.5 does not
+        let hasTE2 = FileManager.default.fileExists(
+            atPath: resourceURL.appendingPathComponent("TextEncoder2.mlmodelc").path
         )
-        try self.pipeline.loadResources()
+
+        if hasTE2 {
+            self.isXL = true
+            let xlPipeline = try StableDiffusionXLPipeline(
+                resourcesAt: resourceURL, configuration: config, reduceMemory: false
+            )
+            try xlPipeline.loadResources()
+            self.pipeline = xlPipeline
+        } else {
+            self.isXL = false
+            let sdPipeline = try StableDiffusionPipeline(
+                resourcesAt: resourceURL, controlNet: [],
+                configuration: config, disableSafety: true, reduceMemory: false
+            )
+            try sdPipeline.loadResources()
+            self.pipeline = sdPipeline
+        }
     }
+
+    var modelName: String { isXL ? "sdxl-turbo" : "sd15-pixnite" }
 
     struct Request: Sendable {
         var prompt: String

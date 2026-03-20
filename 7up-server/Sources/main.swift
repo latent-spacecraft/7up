@@ -5,13 +5,12 @@ import Logging
 // ---------------------------------------------------------------------------
 // CLI argument parsing (lightweight, no ArgumentParser dependency)
 // ---------------------------------------------------------------------------
-func parseModelPath() -> String {
+func parseArg(_ flag: String, default defaultVal: String) -> String {
     let args = CommandLine.arguments
-    if let idx = args.firstIndex(of: "--model-path"), idx + 1 < args.count {
+    if let idx = args.firstIndex(of: flag), idx + 1 < args.count {
         return args[idx + 1]
     }
-    // Default relative to where the server sits in the repo layout
-    return "../models/sdxl-turbo-coreml/resources"
+    return defaultVal
 }
 
 // ---------------------------------------------------------------------------
@@ -27,6 +26,7 @@ struct GenerateRequest: Decodable, Sendable {
     var guidance_scale: Float?
     var scheduler: String?
     var remove_background: Bool?
+    var model: String?  // "sdxl" or "pixel" — selects which pipeline
 }
 
 struct HealthResponse: Encodable, Sendable {
@@ -42,22 +42,46 @@ struct ErrorBody: Encodable, Sendable {
 // Bootstrap
 // ---------------------------------------------------------------------------
 let logger = Logger(label: "7up-server")
-let modelPath = parseModelPath()
 
-logger.info("Loading SDXL Turbo pipeline from: \(modelPath)")
+// Model paths — can be overridden via CLI
+let sdxlPath = parseArg("--sdxl-path", default: "../models/sdxl-turbo-coreml/apple/Resources")
+let pixelPath = parseArg("--pixel-path", default: "../models/pixnite15-coreml/apple/Resources")
+// Legacy single --model-path sets the default
+let legacyPath = parseArg("--model-path", default: "")
 
-// The generator is optional: nil while the model hasn't loaded (or failed).
-// We load eagerly on the main path, but wrap in do/catch so the server still
-// boots and can return 503 on /generate if the model isn't available.
-let generator: ImageGenerator?
-do {
-    generator = try ImageGenerator(modelPath: modelPath)
-    logger.info("Pipeline loaded successfully")
-} catch {
-    logger.error("Failed to load pipeline: \(error)")
-    logger.warning("Server will start but /generate will return 503")
-    generator = nil
+// Load available models (written once at boot, read-only after)
+nonisolated(unsafe) var generators: [String: ImageGenerator] = [:]
+
+func tryLoad(_ name: String, _ path: String) {
+    guard FileManager.default.fileExists(atPath: path) else {
+        logger.info("Skipping \(name): \(path) not found")
+        return
+    }
+    logger.info("Loading \(name) from: \(path)")
+    do {
+        generators[name] = try ImageGenerator(modelPath: path)
+        logger.info("✓ \(name) loaded")
+    } catch {
+        logger.error("✗ \(name) failed: \(error)")
+    }
 }
+
+if !legacyPath.isEmpty {
+    tryLoad("default", legacyPath)
+} else {
+    tryLoad("sdxl", sdxlPath)
+    tryLoad("pixel", pixelPath)
+}
+
+// Convenience: pick generator by request model field
+func generator(for modelName: String?) -> ImageGenerator? {
+    if let name = modelName, let gen = generators[name] { return gen }
+    // Fallback order: requested → sdxl → pixel → default → first available
+    return generators["sdxl"] ?? generators["pixel"] ?? generators["default"] ?? generators.values.first
+}
+
+let defaultGenerator = generator(for: nil)
+logger.info("Models loaded: \(generators.keys.sorted().joined(separator: ", "))")
 
 // ---------------------------------------------------------------------------
 // Router
@@ -67,9 +91,10 @@ let router = Router()
 // CORS middleware on all routes
 router.middlewares.add(CORSMiddleware())
 
-// GET /health
+// GET /health — lists all loaded models
 router.get("health") { _, _ -> Response in
-    let body = try JSONEncoder().encode(HealthResponse(status: "ok", model: "sdxl-turbo"))
+    let models = generators.keys.sorted().joined(separator: ",")
+    let body = try JSONEncoder().encode(HealthResponse(status: "ok", model: models))
     return Response(
         status: .ok,
         headers: [.contentType: "application/json"],
@@ -79,26 +104,26 @@ router.get("health") { _, _ -> Response in
 
 // POST /generate
 router.post("generate") { request, _ -> Response in
-    guard let gen = generator else {
-        let body = try JSONEncoder().encode(
-            ErrorBody(error: "Model not loaded. Start server with --model-path pointing to SDXL Turbo Core ML models.")
-        )
+    // Peek at model field from body (we'll fully decode later)
+    let bodyData = try await request.body.collect(upTo: 1_048_576)
+    let payload: GenerateRequest
+    do {
+        payload = try JSONDecoder().decode(GenerateRequest.self, from: bodyData)
+    } catch {
+        let body = try JSONEncoder().encode(ErrorBody(error: "Invalid JSON body: \(error)"))
         return Response(
-            status: .serviceUnavailable,
+            status: .badRequest,
             headers: [.contentType: "application/json"],
             body: .init(byteBuffer: .init(data: body))
         )
     }
 
-    // Decode request body
-    let payload: GenerateRequest
-    do {
-        let collected = try await request.body.collect(upTo: 1_048_576)  // 1 MB max
-        payload = try JSONDecoder().decode(GenerateRequest.self, from: collected)
-    } catch {
-        let body = try JSONEncoder().encode(ErrorBody(error: "Invalid JSON body: \(error)"))
+    guard let gen = generator(for: payload.model) else {
+        let body = try JSONEncoder().encode(
+            ErrorBody(error: "Model not loaded. Start server with --model-path pointing to SDXL Turbo Core ML models.")
+        )
         return Response(
-            status: .badRequest,
+            status: .serviceUnavailable,
             headers: [.contentType: "application/json"],
             body: .init(byteBuffer: .init(data: body))
         )
@@ -142,12 +167,6 @@ router.post("generate") { request, _ -> Response in
 
 // POST /generate-sprites — generates image then extracts individual objects as separate RGBA PNGs
 router.post("generate-sprites") { request, _ -> Response in
-    guard let gen = generator else {
-        let body = try JSONEncoder().encode(ErrorBody(error: "Model not loaded."))
-        return Response(status: .serviceUnavailable, headers: [.contentType: "application/json"],
-                        body: .init(byteBuffer: .init(data: body)))
-    }
-
     let payload: GenerateRequest
     do {
         let collected = try await request.body.collect(upTo: 1_048_576)
@@ -155,6 +174,12 @@ router.post("generate-sprites") { request, _ -> Response in
     } catch {
         let body = try JSONEncoder().encode(ErrorBody(error: "Invalid JSON: \(error)"))
         return Response(status: .badRequest, headers: [.contentType: "application/json"],
+                        body: .init(byteBuffer: .init(data: body)))
+    }
+
+    guard let gen = generator(for: payload.model) else {
+        let body = try JSONEncoder().encode(ErrorBody(error: "No model loaded."))
+        return Response(status: .serviceUnavailable, headers: [.contentType: "application/json"],
                         body: .init(byteBuffer: .init(data: body)))
     }
 

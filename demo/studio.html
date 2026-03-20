@@ -262,6 +262,13 @@
           </select>
         </div>
         <div class="field">
+          <label>Model</label>
+          <select id="sdxl-model">
+            <option value="sdxl" selected>SDXL Turbo (backgrounds)</option>
+            <option value="pixel">Pixnite15 (pixel sprites)</option>
+          </select>
+        </div>
+        <div class="field">
           <label>Server</label>
           <input type="text" id="server-url" value="http://localhost:8090" />
         </div>
@@ -391,6 +398,7 @@ function buildLevelFile() {
       steps: parseInt($('#sdxl-steps').value),
       cfg: parseFloat($('#sdxl-cfg').value),
       scheduler: $('#sdxl-scheduler').value,
+      model: $('#sdxl-model').value,
     },
     layers: layerPrompts.map((prompt, i) => ({
       name: LAYER_NAMES[i],
@@ -516,6 +524,7 @@ async function generateLayerPreview(layerIdx) {
         steps: parseInt($('#sdxl-steps').value),
         guidance_scale: parseFloat($('#sdxl-cfg').value),
         scheduler: $('#sdxl-scheduler').value,
+        model: $('#sdxl-model').value,
       }),
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -560,6 +569,7 @@ async function generateSpritePreview(prompt, seed, container, statusEl) {
         steps: parseInt($('#sdxl-steps').value),
         guidance_scale: parseFloat($('#sdxl-cfg').value),
         scheduler: $('#sdxl-scheduler').value,
+        model: $('#sdxl-model').value,
       }),
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);

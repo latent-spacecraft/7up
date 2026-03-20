@@ -254,8 +254,8 @@
 
 <header>
   <div>
-    <h1>SDXL TURBO STUDIO</h1>
-    <div class="subtitle">CORE ML &middot; APPLE SILICON &middot; 1-4 STEP DIFFUSION</div>
+    <h1>7UP IMAGE STUDIO</h1>
+    <div class="subtitle">CORE ML &middot; APPLE SILICON &middot; SDXL TURBO + PIXNITE15</div>
   </div>
   <div id="server-status" class="checking">checking server...</div>
 </header>
@@ -271,15 +271,23 @@
       <textarea id="neg-prompt" placeholder="What to avoid...">blurry, watermark, text, low quality</textarea>
     </div>
 
+    <div class="section-title">Model</div>
+    <div class="field">
+      <select id="model">
+        <option value="sdxl">SDXL Turbo (2 steps, photorealistic)</option>
+        <option value="pixel">Pixnite15 (20 steps, pixel art)</option>
+      </select>
+    </div>
+
     <div class="section-title">Generation</div>
     <div class="row">
       <div class="field">
-        <label>Steps <span class="val" id="steps-val">1</span></label>
-        <input type="range" id="steps" min="1" max="4" value="1" step="1" />
+        <label>Steps <span class="val" id="steps-val">2</span></label>
+        <input type="range" id="steps" min="1" max="40" value="2" step="1" />
       </div>
       <div class="field">
-        <label>CFG Scale <span class="val" id="cfg-val">0.0</span></label>
-        <input type="range" id="cfg" min="0" max="10" value="0" step="0.5" />
+        <label>CFG Scale <span class="val" id="cfg-val">1.0</span></label>
+        <input type="range" id="cfg" min="0" max="15" value="1" step="0.5" />
       </div>
     </div>
     <div class="row">
@@ -410,6 +418,7 @@ async function generate() {
     steps: parseInt($('#steps').value),
     guidance_scale: parseFloat($('#cfg').value),
     scheduler: $('#scheduler').value,
+    model: $('#model').value,
     width: parseInt($('#width').value),
     height: parseInt($('#height').value),
   };
@@ -440,6 +449,7 @@ async function generate() {
     // Update info bar
     $('#gen-info').innerHTML =
       `<span class="time">${elapsed}s</span> &middot; ` +
+      `<span class="val">${params.model}</span> &middot; ` +
       `<span class="val">${params.width}x${params.height}</span> &middot; ` +
       `seed <span class="val">${params.seed}</span> &middot; ` +
       `${params.steps} step${params.steps > 1 ? 's' : ''} &middot; ` +
@@ -521,6 +531,23 @@ function renderHistory() {
     strip.appendChild(img);
   });
 }
+
+// ── Model preset switcher ───────────────────
+$('#model').addEventListener('change', () => {
+  const m = $('#model').value;
+  if (m === 'pixel') {
+    $('#steps').value = 20; $('#steps').max = 40; $('#steps-val').textContent = '20';
+    $('#cfg').value = 7.5; $('#cfg-val').textContent = '7.5';
+    $('#scheduler').value = 'dpmSolverMultistep';
+    if (!$('#prompt').value.includes('pixel art')) {
+      $('#prompt').value = '((best quality)),((highly detailed)),masterpiece,pixel art, white background, ' + $('#prompt').value;
+    }
+  } else {
+    $('#steps').value = 2; $('#steps').max = 4; $('#steps-val').textContent = '2';
+    $('#cfg').value = 1; $('#cfg-val').textContent = '1.0';
+    $('#scheduler').value = 'eulerAncestral';
+  }
+});
 
 // ── Slider labels ───────────────────────────
 $('#steps').addEventListener('input', (e) => {
