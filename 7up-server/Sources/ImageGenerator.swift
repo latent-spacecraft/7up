@@ -32,8 +32,19 @@ actor ImageGenerator {
             self.pipeline = xlPipeline
         } else {
             self.isXL = false
+            // Check for ControlNet models in controlnet/ subdirectory
+            let controlNetDir = resourceURL.appendingPathComponent("controlnet")
+            var controlNetNames: [String] = []
+            if FileManager.default.fileExists(atPath: controlNetDir.path) {
+                let contents = try FileManager.default.contentsOfDirectory(
+                    at: controlNetDir, includingPropertiesForKeys: nil
+                )
+                controlNetNames = contents
+                    .filter { $0.pathExtension == "mlmodelc" }
+                    .map { $0.deletingPathExtension().lastPathComponent }
+            }
             let sdPipeline = try StableDiffusionPipeline(
-                resourcesAt: resourceURL, controlNet: [],
+                resourcesAt: resourceURL, controlNet: controlNetNames,
                 configuration: config, disableSafety: true, reduceMemory: false
             )
             try sdPipeline.loadResources()
@@ -52,7 +63,10 @@ actor ImageGenerator {
         var steps: Int
         var guidanceScale: Float
         var schedulerName: String
-        var removeBackground: Bool  // Use Vision framework to create alpha mask
+        var removeBackground: Bool
+        var controlNetImage: CGImage?  // OpenPose skeleton for ControlNet conditioning
+        var referenceImage: CGImage?   // img2img reference for consistency
+        var denoise: Float?            // img2img denoising strength (0-1)
     }
 
     struct Result: Sendable {
@@ -80,6 +94,17 @@ actor ImageGenerator {
         pipelineConfig.guidanceScale = request.guidanceScale
         pipelineConfig.schedulerType = schedulerType(from: request.schedulerName)
         pipelineConfig.imageCount = 1
+
+        // ControlNet conditioning (OpenPose skeleton image)
+        if let controlImg = request.controlNetImage {
+            pipelineConfig.controlNetInputs = [controlImg]
+        }
+
+        // img2img mode (reference image + denoise strength)
+        if let refImg = request.referenceImage {
+            pipelineConfig.startingImage = refImg
+            pipelineConfig.strength = request.denoise ?? 0.8
+        }
 
         let images = try pipeline.generateImages(configuration: pipelineConfig) { progress in
             return true

@@ -352,118 +352,313 @@ const state = {
   entities: [],
 };
 
-// ── LISSAJOUS ENTITIES ───────────────────────
-// Each entity follows x(t)=A*sin(a*t+δ), y(t)=B*sin(b*t)
-// anchored to a world-X position that scrolls with the camera.
-// Seed determines curve shape. AI sprite assigned from sprite pool.
+// ── ENTITY TYPE DEFINITIONS ──────────────────
+// Each type defines which animation loops are required/optional
+// and the movement strategy.
+const ENTITY_TYPES = {
+  flying_enemy: {
+    movement: 'lissajous',
+    animations: {
+      fly:    { frames: 4, fps: 8,  loop: true,  required: true },
+      attack: { frames: 3, fps: 12, loop: false, required: false },
+      hit:    { frames: 2, fps: 6,  loop: false, required: false },
+      death:  { frames: 3, fps: 8,  loop: false, required: false },
+    },
+    defaultAnim: 'fly',
+  },
+  ground_enemy: {
+    movement: 'patrol',
+    animations: {
+      idle:   { frames: 2, fps: 3,  loop: true,  required: true },
+      walk:   { frames: 4, fps: 6,  loop: true,  required: true },
+      attack: { frames: 3, fps: 10, loop: false, required: false },
+      hit:    { frames: 2, fps: 6,  loop: false, required: false },
+      death:  { frames: 3, fps: 8,  loop: false, required: false },
+    },
+    defaultAnim: 'walk',
+  },
+  npc_static: {
+    movement: 'fixed',
+    animations: {
+      idle:     { frames: 2, fps: 2, loop: true,  required: true },
+      interact: { frames: 4, fps: 6, loop: false, required: false },
+    },
+    defaultAnim: 'idle',
+  },
+  pickup: {
+    movement: 'bob',
+    animations: {
+      idle:      { frames: 2, fps: 4, loop: true,  required: true },
+      collected: { frames: 3, fps: 10, loop: false, required: false },
+    },
+    defaultAnim: 'idle',
+  },
+};
 
-class LissajousEntity {
-  constructor(worldX, seed, spriteIdx) {
+// ── ANIMATED ENTITY ──────────────────────────
+// Core entity class with sprite animation state machine,
+// Lissajous/patrol/fixed movement, and mass-scaled dynamics.
+
+class AnimatedEntity {
+  constructor(worldX, seed, typeName, spriteIdx) {
     const rng = new SeededRNG(seed);
     this.worldX = worldX;
     this.seed = seed;
-    this.spriteIdx = spriteIdx; // Index into the shared sprite pool
+    this.typeName = typeName;
+    this.typeData = ENTITY_TYPES[typeName] || ENTITY_TYPES.flying_enemy;
+    this.spriteIdx = spriteIdx;
+    this.alive = true;
 
-    // Size first — everything else scales from it
+    // ── Size & mass (drives dynamics) ──
     this.drawSize = rng.range(12, 36);
-    // mass: 0 (tiny) → 1 (huge), used to scale dynamics
     const mass = (this.drawSize - 12) / 24;
 
-    // Lissajous parameters — scaled by mass
-    const ratios = [
-      [1, 1], [1, 2], [2, 3], [3, 2],
-      [3, 4], [1, 3], [2, 5], [4, 3],
-    ];
-    const ratio = ratios[rng.int(0, ratios.length)];
-    this.a = ratio[0];
-    this.b = ratio[1];
-    // Big ships: wide lazy orbits. Small ships: tight aggressive patterns.
-    this.A = rng.range(15, 30) + mass * 35;          // 15-30 → 50-65
-    this.B = rng.range(10, 25) + mass * 25;           // 10-25 → 35-50
-    this.delta = rng.range(0, Math.PI * 2);
-    this.speed = rng.range(1.8, 3.0) - mass * 1.5;   // small=fast(1.8-3.0), big=slow(0.3-1.5)
-    this.baseY = rng.range(0.2, 0.7);
-    this.hue = rng.range(0, 360);
+    // ── Movement parameters ──
+    if (this.typeData.movement === 'lissajous') {
+      const ratios = [[1,1],[1,2],[2,3],[3,2],[3,4],[1,3],[2,5],[4,3]];
+      const ratio = ratios[rng.int(0, ratios.length)];
+      this.liss = {
+        a: ratio[0], b: ratio[1],
+        A: rng.range(15, 30) + mass * 35,
+        B: rng.range(10, 25) + mass * 25,
+        delta: rng.range(0, Math.PI * 2),
+        speed: rng.range(1.8, 3.0) - mass * 1.5,
+      };
+      this.baseY = rng.range(0.2, 0.65);
+    } else if (this.typeData.movement === 'patrol') {
+      this.patrolRange = rng.range(40, 120);
+      this.patrolSpeed = rng.range(0.3, 0.8) - mass * 0.3;
+      this.patrolDir = 1;
+      this.baseY = rng.range(0.65, 0.78);
+    } else if (this.typeData.movement === 'bob') {
+      this.bobAmplitude = rng.range(2, 6);
+      this.bobSpeed = rng.range(1.5, 3.0);
+      this.baseY = rng.range(0.3, 0.6);
+    } else {
+      this.baseY = rng.range(0.4, 0.7);
+    }
 
-    // Trail — longer for big ships (more momentum = more wake)
+    this.hue = rng.range(0, 360);
+    this.localX = 0; // Offset from worldX for patrol movement
+
+    // ── Animation state machine ──
+    this.currentAnim = this.typeData.defaultAnim;
+    this.frameIndex = 0;
+    this.frameTimer = 0;
+    this.animQueue = null; // Play-once anim, then return to default
+
+    // ── Trail (for flying entities) ──
     this.trail = [];
-    this.maxTrail = Math.round(6 + mass * 12); // 6 (tiny) → 18 (huge)
+    this.maxTrail = this.typeData.movement === 'lissajous' ? Math.round(6 + mass * 12) : 0;
     this.prevPos = null;
   }
 
-  getPosition(time, cameraX) {
-    const screenX = (this.worldX - cameraX) + this.A * Math.sin(this.a * time * this.speed + this.delta);
-    const screenY = CFG.INTERNAL_H * this.baseY + this.B * Math.sin(this.b * time * this.speed);
-    return { x: screenX, y: screenY };
+  // ── Animation state machine ──
+
+  get currentAnimData() {
+    return this.typeData.animations[this.currentAnim];
   }
 
-  update(time, cameraX) {
+  playAnim(name) {
+    if (!this.typeData.animations[name]) return;
+    if (this.typeData.animations[name].loop) {
+      this.currentAnim = name;
+    } else {
+      // Play-once: queue it, return to default when done
+      this.animQueue = this.currentAnim;
+      this.currentAnim = name;
+    }
+    this.frameIndex = 0;
+    this.frameTimer = 0;
+  }
+
+  updateAnimation(dt) {
+    const anim = this.currentAnimData;
+    if (!anim) return;
+    this.frameTimer += dt;
+    const frameDuration = 1 / anim.fps;
+    if (this.frameTimer >= frameDuration) {
+      this.frameTimer -= frameDuration;
+      this.frameIndex++;
+      if (this.frameIndex >= anim.frames) {
+        if (anim.loop) {
+          this.frameIndex = 0;
+        } else {
+          // Play-once finished — return to queued or default anim
+          this.frameIndex = anim.frames - 1; // Hold last frame
+          if (this.animQueue) {
+            this.currentAnim = this.animQueue;
+            this.animQueue = null;
+            this.frameIndex = 0;
+            this.frameTimer = 0;
+          }
+        }
+      }
+    }
+  }
+
+  // ── Position ──
+
+  getPosition(time, cameraX) {
+    const H = CFG.INTERNAL_H;
+    if (this.typeData.movement === 'lissajous') {
+      const l = this.liss;
+      const sx = (this.worldX - cameraX) + l.A * Math.sin(l.a * time * l.speed + l.delta);
+      const sy = H * this.baseY + l.B * Math.sin(l.b * time * l.speed);
+      return { x: sx, y: sy };
+    } else if (this.typeData.movement === 'patrol') {
+      const sx = (this.worldX + this.localX - cameraX);
+      const sy = H * this.baseY;
+      return { x: sx, y: sy };
+    } else if (this.typeData.movement === 'bob') {
+      const sx = (this.worldX - cameraX);
+      const sy = H * this.baseY + Math.sin(time * this.bobSpeed) * this.bobAmplitude;
+      return { x: sx, y: sy };
+    } else {
+      return { x: this.worldX - cameraX, y: H * this.baseY };
+    }
+  }
+
+  // ── Update ──
+
+  update(time, dt, cameraX) {
     this.prevPos = this.trail[0] || null;
     const pos = this.getPosition(time, cameraX);
-    this.trail.unshift(pos);
-    if (this.trail.length > this.maxTrail) this.trail.pop();
+
+    // Patrol movement
+    if (this.typeData.movement === 'patrol') {
+      this.localX += this.patrolDir * this.patrolSpeed * dt * 60;
+      if (Math.abs(this.localX) > this.patrolRange) {
+        this.patrolDir *= -1;
+      }
+    }
+
+    // Trail for flying entities
+    if (this.maxTrail > 0) {
+      this.trail.unshift(pos);
+      if (this.trail.length > this.maxTrail) this.trail.pop();
+    }
+
+    this.updateAnimation(dt);
   }
 
+  // ── Draw ──
+
   draw(ctx, time) {
-    if (this.trail.length === 0) return;
-    const pos = this.trail[0];
+    const pos = this.trail[0] || this.getPosition(time, state.cameraX);
     const W = CFG.INTERNAL_W;
     if (pos.x < -80 || pos.x > W + 80) return;
 
     ctx.save();
 
-    // Compute heading angle from movement direction
-    let angle = Math.PI; // Default: facing left (toward player)
-    if (this.prevPos) {
+    // Heading angle (for flying entities)
+    let angle = 0;
+    if (this.typeData.movement === 'lissajous' && this.prevPos) {
       const dx = pos.x - this.prevPos.x;
       const dy = pos.y - this.prevPos.y;
       if (Math.abs(dx) > 0.1 || Math.abs(dy) > 0.1) {
         angle = Math.atan2(dy, dx);
+      } else {
+        angle = Math.PI; // Default: facing left
+      }
+    } else if (this.typeData.movement === 'patrol') {
+      angle = this.patrolDir > 0 ? 0 : Math.PI;
+    }
+
+    // Engine trail (flying entities only)
+    if (this.trail.length > 1) {
+      for (let i = this.trail.length - 1; i >= 1; i--) {
+        const t = this.trail[i];
+        if (t.x < -80 || t.x > W + 80) continue;
+        const fade = 1 - i / this.trail.length;
+        ctx.globalAlpha = fade * 0.25;
+        ctx.fillStyle = `hsl(${this.hue}, 90%, 70%)`;
+        const s = this.drawSize * fade * 0.2;
+        ctx.fillRect(t.x - s/2, t.y - s/2, s, s);
       }
     }
 
-    // Draw engine trail
-    ctx.globalAlpha = 0.4;
-    for (let i = this.trail.length - 1; i >= 1; i--) {
-      const t = this.trail[i];
-      if (t.x < -80 || t.x > W + 80) continue;
-      const fade = 1 - i / this.trail.length;
-      ctx.globalAlpha = fade * 0.25;
-      ctx.fillStyle = `hsl(${this.hue}, 90%, 70%)`;
-      const s = this.drawSize * fade * 0.2;
-      ctx.fillRect(t.x - s/2, t.y - s/2, s, s);
-    }
-
-    // Draw sprite or fallback
-    // Map sprite index to available pool (wraps around)
+    // Draw sprite with animation frame
     const poolSize = entitySprites.size || 1;
     const sprite = entitySprites.get(this.spriteIdx % poolSize);
     const s = this.drawSize;
     ctx.globalAlpha = 1;
 
     ctx.translate(pos.x, pos.y);
-    ctx.rotate(angle);
+    if (this.typeData.movement === 'lissajous') ctx.rotate(angle);
+    // Patrol entities: flip horizontally when facing left
+    if (this.typeData.movement === 'patrol' && this.patrolDir < 0) ctx.scale(-1, 1);
 
     if (sprite) {
-      // Draw AI sprite — centered, rotated to heading
-      ctx.drawImage(sprite, -s/2, -s/2, s, s);
+      // If we have a sprite sheet with multiple frames, slice it
+      // For now: single sprite with animation pulse
+      const pulse = 1 + 0.05 * Math.sin(time * this.currentAnimData.fps + this.frameIndex);
+      const ds = s * pulse;
+      ctx.drawImage(sprite, -ds/2, -ds/2, ds, ds);
+
+      // Animation indicator: subtle flash on frame change
+      if (this.frameTimer < 0.05) {
+        ctx.globalAlpha = 0.15;
+        ctx.fillStyle = `hsl(${this.hue}, 100%, 80%)`;
+        ctx.beginPath();
+        ctx.arc(0, 0, ds * 0.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
     } else {
-      // Fallback: simple arrow shape pointing right (rotation handles direction)
+      // Procedural fallback by type
       const pulse = 0.8 + 0.2 * Math.sin(time * 4 + this.seed);
       const sz = s * 0.4 * pulse;
       ctx.fillStyle = `hsl(${this.hue}, 85%, 60%)`;
-      ctx.beginPath();
-      ctx.moveTo(sz, 0);
-      ctx.lineTo(-sz, -sz * 0.6);
-      ctx.lineTo(-sz * 0.5, 0);
-      ctx.lineTo(-sz, sz * 0.6);
-      ctx.closePath();
-      ctx.fill();
-      // Engine glow
-      ctx.fillStyle = `hsl(${(this.hue + 30) % 360}, 100%, 75%)`;
-      ctx.globalAlpha = 0.6 + 0.3 * Math.sin(time * 8);
-      ctx.fillRect(-sz - 2, -2, 4, 4);
+
+      if (this.typeData.movement === 'lissajous') {
+        // Arrow shape (fighter)
+        ctx.beginPath();
+        ctx.moveTo(sz, 0);
+        ctx.lineTo(-sz, -sz * 0.6);
+        ctx.lineTo(-sz * 0.5, 0);
+        ctx.lineTo(-sz, sz * 0.6);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = `hsl(${(this.hue + 30) % 360}, 100%, 75%)`;
+        ctx.globalAlpha = 0.6 + 0.3 * Math.sin(time * 8);
+        ctx.fillRect(-sz - 2, -2, 4, 4);
+      } else if (this.typeData.movement === 'patrol') {
+        // Walking box enemy
+        const legPhase = Math.sin(time * 6) * 3;
+        ctx.fillRect(-sz * 0.5, -sz, sz, sz * 1.5);
+        ctx.fillRect(-sz * 0.7, sz * 0.3, sz * 0.3, sz * 0.5 + legPhase);
+        ctx.fillRect(sz * 0.3, sz * 0.3, sz * 0.3, sz * 0.5 - legPhase);
+        // Eyes
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(-sz * 0.3, -sz * 0.7, sz * 0.2, sz * 0.2);
+        ctx.fillRect(sz * 0.1, -sz * 0.7, sz * 0.2, sz * 0.2);
+      } else if (this.typeData.movement === 'bob') {
+        // Pickup glow
+        ctx.fillStyle = `hsl(${this.hue}, 100%, 70%)`;
+        ctx.globalAlpha = 0.7 + 0.3 * Math.sin(time * 4);
+        ctx.beginPath();
+        ctx.arc(0, 0, sz * 0.8, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#fff';
+        ctx.globalAlpha = 0.9;
+        ctx.beginPath();
+        ctx.arc(0, 0, sz * 0.3, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        // Static NPC
+        ctx.fillRect(-sz * 0.5, -sz, sz, sz * 2);
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(-sz * 0.2, -sz * 0.7, sz * 0.15, sz * 0.15);
+        ctx.fillRect(sz * 0.1, -sz * 0.7, sz * 0.15, sz * 0.15);
+      }
     }
+
+    // Glow halo
+    ctx.globalAlpha = 0.08 + 0.05 * Math.sin(time * 3);
+    ctx.fillStyle = `hsl(${this.hue}, 100%, 80%)`;
+    ctx.beginPath();
+    ctx.arc(0, 0, s * 0.8, 0, Math.PI * 2);
+    ctx.fill();
 
     ctx.restore();
   }
@@ -563,21 +758,44 @@ async function loadStructureSprites() {
 }
 
 // Spawn entities along the world — seeded deterministically
+// Creates a mix of entity types based on seed
 function spawnEntities() {
   const rng = new SeededRNG(CFG.LEVEL_SEED * 31337);
   const entities = [];
   const SPAWN_RANGE = 20000;
-  const DENSITY = 80;
 
   let worldX = 200;
   while (worldX < SPAWN_RANGE) {
-    const gap = DENSITY + rng.range(-30, 60);
+    const roll = rng.next();
+    let typeName, gap;
+
+    if (roll < 0.55) {
+      // Flying enemies — most common, regular spacing
+      typeName = 'flying_enemy';
+      gap = 80 + rng.range(-20, 40);
+    } else if (roll < 0.75) {
+      // Ground enemies — less frequent, more spaced
+      typeName = 'ground_enemy';
+      gap = 150 + rng.range(-30, 60);
+    } else if (roll < 0.88) {
+      // Pickups — scattered
+      typeName = 'pickup';
+      gap = 200 + rng.range(-50, 100);
+    } else {
+      // Static NPCs — rare
+      typeName = 'npc_static';
+      gap = 400 + rng.range(-100, 200);
+    }
+
     worldX += gap;
     const entitySeed = rng.int(0, 1000000);
-    // Assign a sprite index (wraps around available sprites)
-    const spriteIdx = rng.int(0, 20); // Will map to actual sprites once loaded
-    entities.push(new LissajousEntity(worldX, entitySeed, spriteIdx % Math.max(1, entitySprites.size || 10)));
+    const spriteIdx = rng.int(0, 20);
+    entities.push(new AnimatedEntity(worldX, entitySeed, typeName, spriteIdx));
   }
+
+  const counts = {};
+  for (const e of entities) counts[e.typeName] = (counts[e.typeName] || 0) + 1;
+  console.log(`[Entities] Spawned ${entities.length}:`, counts);
   return entities;
 }
 
@@ -1117,9 +1335,9 @@ function update(dt) {
 
   state.globalT = rawT;
 
-  // Update entities
+  // Update entities (pass dt for animation timing)
   for (const e of state.entities) {
-    e.update(state.time, state.cameraX);
+    e.update(state.time, dt, state.cameraX);
   }
 }
 

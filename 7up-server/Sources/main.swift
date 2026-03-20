@@ -1,5 +1,7 @@
+import CoreGraphics
 import Foundation
 import Hummingbird
+import ImageIO
 import Logging
 
 // ---------------------------------------------------------------------------
@@ -138,7 +140,8 @@ router.post("generate") { request, _ -> Response in
         steps: payload.steps ?? 1,
         guidanceScale: payload.guidance_scale ?? 0.0,
         schedulerName: payload.scheduler ?? "dpmSolverMultistep",
-        removeBackground: payload.remove_background ?? false
+        removeBackground: payload.remove_background ?? false,
+        controlNetImage: nil, referenceImage: nil, denoise: nil
     )
 
     logger.info("Generating: \"\(genRequest.prompt)\" seed=\(genRequest.seed) \(genRequest.width)x\(genRequest.height)")
@@ -157,6 +160,82 @@ router.post("generate") { request, _ -> Response in
     }
 
     logger.info("Generated image in \(String(format: "%.2f", result.elapsedSeconds))s (\(result.pngData.count) bytes)")
+
+    return Response(
+        status: .ok,
+        headers: [.contentType: "image/png"],
+        body: .init(byteBuffer: .init(data: result.pngData))
+    )
+}
+
+// POST /generate-controlled — generate with ControlNet pose + optional img2img reference
+router.post("generate-controlled") { request, _ -> Response in
+    let collected = try await request.body.collect(upTo: 10_048_576) // 10MB for base64 images
+
+    struct ControlledRequest: Decodable {
+        var prompt: String
+        var negative_prompt: String?
+        var seed: UInt32?
+        var steps: Int?
+        var guidance_scale: Float?
+        var scheduler: String?
+        var model: String?
+        var denoise: Float?
+        var pose_image: String?      // Base64 PNG of the OpenPose skeleton
+        var reference_image: String?  // Base64 PNG of the reference character
+    }
+
+    let payload: ControlledRequest
+    do {
+        payload = try JSONDecoder().decode(ControlledRequest.self, from: collected)
+    } catch {
+        let body = try JSONEncoder().encode(ErrorBody(error: "Invalid JSON: \(error)"))
+        return Response(status: .badRequest, headers: [.contentType: "application/json"],
+                        body: .init(byteBuffer: .init(data: body)))
+    }
+
+    guard let gen = generator(for: payload.model) else {
+        let body = try JSONEncoder().encode(ErrorBody(error: "No model loaded."))
+        return Response(status: .serviceUnavailable, headers: [.contentType: "application/json"],
+                        body: .init(byteBuffer: .init(data: body)))
+    }
+
+    // Decode base64 images
+    func decodeImage(_ b64: String?) -> CGImage? {
+        guard let str = b64, let data = Data(base64Encoded: str),
+              let provider = CGDataProvider(data: data as CFData),
+              let source = CGImageSourceCreateWithDataProvider(provider, nil),
+              let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+        return cgImage
+    }
+
+    let genRequest = ImageGenerator.Request(
+        prompt: payload.prompt,
+        negativePrompt: payload.negative_prompt ?? "",
+        seed: payload.seed ?? UInt32.random(in: 0...UInt32.max),
+        width: 512, height: 512,
+        steps: payload.steps ?? 20,
+        guidanceScale: payload.guidance_scale ?? 7.5,
+        schedulerName: payload.scheduler ?? "dpmSolverMultistep",
+        removeBackground: false,
+        controlNetImage: decodeImage(payload.pose_image),
+        referenceImage: decodeImage(payload.reference_image),
+        denoise: payload.denoise
+    )
+
+    logger.info("ControlNet generate: \"\(genRequest.prompt.prefix(40))\" seed=\(genRequest.seed) pose=\(payload.pose_image != nil) ref=\(payload.reference_image != nil)")
+
+    let result: ImageGenerator.Result
+    do {
+        result = try await gen.generate(genRequest)
+    } catch {
+        logger.error("ControlNet generation failed: \(error)")
+        let body = try JSONEncoder().encode(ErrorBody(error: "Failed: \(error)"))
+        return Response(status: .internalServerError, headers: [.contentType: "application/json"],
+                        body: .init(byteBuffer: .init(data: body)))
+    }
+
+    logger.info("ControlNet generated in \(String(format: "%.2f", result.elapsedSeconds))s")
 
     return Response(
         status: .ok,
@@ -192,7 +271,8 @@ router.post("generate-sprites") { request, _ -> Response in
         steps: payload.steps ?? 2,
         guidanceScale: payload.guidance_scale ?? 1.0,
         schedulerName: payload.scheduler ?? "eulerAncestral",
-        removeBackground: false
+        removeBackground: false,
+        controlNetImage: nil, referenceImage: nil, denoise: nil
     )
 
     logger.info("Generating sprites: \"\(genRequest.prompt.prefix(50))\" seed=\(genRequest.seed)")

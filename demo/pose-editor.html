@@ -1,0 +1,707 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>7UP — Pose & Animation Editor</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;700&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a0f; color: #e0e0e0;
+    font-family: 'JetBrains Mono', monospace;
+    height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+  }
+  header {
+    padding: 10px 20px; display: flex; justify-content: space-between; align-items: center;
+    border-bottom: 1px solid #1a1a2a;
+  }
+  header h1 {
+    font-size: 16px; font-weight: 700;
+    background: linear-gradient(135deg, #ff6b6b, #ffa94d, #ffd43b);
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent; letter-spacing: 3px;
+  }
+  .header-actions { display: flex; gap: 6px; }
+
+  main { flex: 1; display: flex; overflow: hidden; }
+
+  /* Left: controls */
+  .panel { padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+  .panel-left { width: 240px; min-width: 240px; border-right: 1px solid #1a1a2a; }
+  .panel-right { width: 260px; min-width: 260px; border-left: 1px solid #1a1a2a; }
+  .section-title { font-size: 9px; font-weight: 700; color: #555; text-transform: uppercase; letter-spacing: 2px; }
+  .field { display: flex; flex-direction: column; gap: 3px; }
+  .field label { font-size: 9px; color: #555; text-transform: uppercase; letter-spacing: 1px; }
+  input, textarea, select { background: #14141f; border: 1px solid #2a2a3a; border-radius: 3px;
+    color: #e0e0e0; font-family: inherit; font-size: 11px; padding: 5px 8px; outline: none; width: 100%; }
+  input:focus, textarea:focus { border-color: #ffa94d; }
+  textarea { resize: vertical; min-height: 40px; font-size: 10px; }
+  button { font-family: inherit; font-size: 10px; font-weight: 700; padding: 6px 12px;
+    border: none; border-radius: 3px; cursor: pointer; letter-spacing: 1px; }
+  .btn-primary { background: linear-gradient(135deg, #ff6b6b, #ffa94d); color: #0a0a0f; }
+  .btn-secondary { background: #1a1a2a; color: #888; border: 1px solid #2a2a3a; }
+  .btn-small { padding: 4px 8px; font-size: 9px; }
+  .btn-active { border-color: #ffa94d !important; color: #ffa94d !important; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button:hover:not(:disabled) { filter: brightness(1.1); }
+  .row { display: flex; gap: 6px; }
+  .row > * { flex: 1; }
+
+  /* Center: workspace */
+  .workspace {
+    flex: 1; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; padding: 12px; gap: 10px;
+  }
+  .canvas-row { display: flex; gap: 12px; align-items: start; }
+  .canvas-box { position: relative; border: 1px solid #2a2a3a; border-radius: 4px; overflow: hidden; }
+  .canvas-box canvas { display: block; cursor: crosshair; }
+  .canvas-label {
+    position: absolute; top: 4px; left: 6px; font-size: 9px; color: #555;
+    pointer-events: none; text-transform: uppercase; letter-spacing: 1px;
+  }
+
+  /* Timeline */
+  .timeline {
+    width: 100%; max-width: 900px;
+    background: #12121a; border: 1px solid #1a1a2a; border-radius: 4px;
+    padding: 8px 12px; display: flex; flex-direction: column; gap: 6px;
+  }
+  .timeline-frames {
+    display: flex; gap: 3px; overflow-x: auto; padding: 4px 0;
+  }
+  .frame-thumb {
+    width: 48px; height: 48px; min-width: 48px;
+    border: 2px solid #2a2a3a; border-radius: 3px;
+    cursor: pointer; position: relative; overflow: hidden;
+    background: #0a0a0f;
+  }
+  .frame-thumb canvas { width: 100%; height: 100%; image-rendering: pixelated; }
+  .frame-thumb.active { border-color: #ffa94d; }
+  .frame-thumb.has-gen { border-color: #51cf66; }
+  .frame-num {
+    position: absolute; bottom: 1px; right: 3px;
+    font-size: 7px; color: #555;
+  }
+  .timeline-controls { display: flex; gap: 6px; align-items: center; font-size: 10px; color: #666; }
+
+  /* Preview strip */
+  .preview-strip {
+    display: flex; gap: 4px; padding: 4px; background: #12121a;
+    border: 1px solid #1a1a2a; border-radius: 4px;
+  }
+  .preview-strip img, .preview-strip canvas {
+    height: 64px; border-radius: 2px; image-rendering: pixelated;
+  }
+
+  .status-bar {
+    padding: 5px 20px; border-top: 1px solid #1a1a2a;
+    font-size: 9px; color: #444; display: flex; gap: 16px;
+  }
+  .status-bar .val { color: #9775fa; }
+  .status-bar .ok { color: #51cf66; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>POSE ANIMATOR</h1>
+  <div class="header-actions">
+    <button class="btn-secondary btn-small" id="btn-play">PLAY</button>
+    <button class="btn-secondary btn-small" id="btn-gen-all">GENERATE ALL</button>
+    <button class="btn-secondary btn-small" id="btn-export">EXPORT SHEET</button>
+  </div>
+</header>
+
+<main>
+  <div class="panel panel-left">
+    <div class="section-title">Preset Poses</div>
+    <div class="row">
+      <button class="btn-secondary btn-small" data-preset="idle">IDLE</button>
+      <button class="btn-secondary btn-small" data-preset="walk">WALK</button>
+    </div>
+    <div class="row">
+      <button class="btn-secondary btn-small" data-preset="fly">FLY</button>
+      <button class="btn-secondary btn-small" data-preset="attack">ATTACK</button>
+    </div>
+    <div class="row">
+      <button class="btn-secondary btn-small" data-preset="jump">JUMP</button>
+      <button class="btn-secondary btn-small" data-preset="wave">WAVE</button>
+    </div>
+
+    <div class="section-title">Keypoints</div>
+    <p style="font-size:8px;color:#444;line-height:1.4;">
+      Drag joints on the pose canvas. Right-click to hide a joint.
+      The colored skeleton matches OpenPose format for ControlNet.
+    </p>
+
+    <div class="section-title">Frame</div>
+    <div class="row">
+      <button class="btn-secondary btn-small" id="btn-copy-frame">COPY</button>
+      <button class="btn-secondary btn-small" id="btn-paste-frame">PASTE</button>
+      <button class="btn-secondary btn-small" id="btn-mirror-frame">MIRROR</button>
+    </div>
+    <div class="row">
+      <button class="btn-secondary btn-small" id="btn-add-frame">+ FRAME</button>
+      <button class="btn-secondary btn-small" id="btn-del-frame">- FRAME</button>
+    </div>
+    <div class="row">
+      <button class="btn-secondary btn-small" id="btn-tween">TWEEN</button>
+    </div>
+
+    <div class="section-title">Generation</div>
+    <div class="field">
+      <label>Prompt</label>
+      <textarea id="prompt">((best quality)),((highly detailed)),masterpiece,pixel art, white background, game character sprite, side view</textarea>
+    </div>
+    <div class="field">
+      <label>Seed</label>
+      <input type="number" id="seed" value="42" />
+    </div>
+    <div class="row">
+      <div class="field">
+        <label>Steps</label>
+        <input type="number" id="steps" value="20" />
+      </div>
+      <div class="field">
+        <label>Denoise</label>
+        <input type="number" id="denoise" value="0.8" step="0.05" min="0" max="1" />
+      </div>
+    </div>
+    <div class="field">
+      <label>Server</label>
+      <input type="text" id="server-url" value="http://localhost:8090" />
+    </div>
+  </div>
+
+  <div class="workspace">
+    <div class="canvas-row">
+      <div class="canvas-box">
+        <canvas id="pose-canvas" width="256" height="256"></canvas>
+        <div class="canvas-label">Pose (drag joints)</div>
+      </div>
+      <div class="canvas-box">
+        <canvas id="result-canvas" width="256" height="256"></canvas>
+        <div class="canvas-label">Generated</div>
+      </div>
+    </div>
+
+    <div class="timeline">
+      <div class="timeline-controls">
+        <button class="btn-secondary btn-small" id="btn-prev-frame">&lt;</button>
+        <span>Frame <span class="val" id="frame-num">1</span> / <span class="val" id="frame-total">4</span></span>
+        <button class="btn-secondary btn-small" id="btn-next-frame">&gt;</button>
+        <span style="flex:1"></span>
+        <span>FPS: <input type="number" id="anim-fps" value="8" min="1" max="30" style="width:40px;text-align:center;" /></span>
+      </div>
+      <div class="timeline-frames" id="timeline-frames"></div>
+    </div>
+
+    <div class="preview-strip" id="preview-strip">
+      <span style="color:#444;font-size:9px;padding:20px;">Generate frames to preview animation</span>
+    </div>
+  </div>
+
+  <div class="panel panel-right">
+    <div class="section-title">Reference Image</div>
+    <div class="canvas-box" style="width:100%;">
+      <canvas id="ref-canvas" width="230" height="230"></canvas>
+      <div class="canvas-label">Reference (drag image here)</div>
+    </div>
+    <button class="btn-secondary btn-small" id="btn-gen-ref" style="width:100%;">GENERATE REFERENCE</button>
+
+    <div class="section-title">Animation Preview</div>
+    <div class="canvas-box" style="width:128px;height:128px;margin:0 auto;">
+      <canvas id="anim-canvas" width="128" height="128" style="image-rendering:pixelated;"></canvas>
+    </div>
+
+    <div class="section-title">Generated Frames</div>
+    <div id="gen-frames" style="display:flex;flex-wrap:wrap;gap:4px;"></div>
+  </div>
+</main>
+
+<div class="status-bar">
+  <span>SERVER <span id="st-server" class="val">--</span></span>
+  <span>FRAMES <span id="st-frames" class="val">0/4</span></span>
+  <span>ANIM <span id="st-anim" class="val">idle</span></span>
+</div>
+
+<script>
+// ============================================================
+//  7UP Pose & Animation Editor
+//  Draw OpenPose skeletons → ControlNet → consistent frames
+// ============================================================
+
+const $ = s => document.querySelector(s);
+const $$ = s => document.querySelectorAll(s);
+
+// ── OpenPose COCO 18-keypoint definition ────
+// Format: [x, y, visible] normalized to [0,1]
+const KEYPOINT_NAMES = [
+  'nose', 'neck',
+  'r_shoulder', 'r_elbow', 'r_wrist',
+  'l_shoulder', 'l_elbow', 'l_wrist',
+  'r_hip', 'r_knee', 'r_ankle',
+  'l_hip', 'l_knee', 'l_ankle',
+  'r_eye', 'l_eye', 'r_ear', 'l_ear',
+];
+
+// Limb connections [from, to] (0-indexed)
+const LIMBS = [
+  [1,2],[1,5],[2,3],[3,4],[5,6],[6,7],  // arms
+  [1,8],[8,9],[9,10],                      // right leg
+  [1,11],[11,12],[12,13],                  // left leg
+  [1,0],[0,14],[14,16],[0,15],[15,17],     // head
+];
+
+// OpenPose limb colors (RGB) — what ControlNet expects
+const LIMB_COLORS = [
+  [255,0,0],[255,85,0],[255,170,0],[255,255,0],
+  [170,255,0],[85,255,0],[0,255,0],[0,255,85],
+  [0,255,170],[0,255,255],[0,170,255],[0,85,255],
+  [0,0,255],[85,0,255],[170,0,255],[255,0,255],
+  [255,0,170],
+];
+
+const JOINT_COLORS = [
+  [255,0,0],[255,85,0],[255,170,0],[255,255,0],
+  [170,255,0],[85,255,0],[0,255,0],[0,255,85],
+  [0,255,170],[0,255,255],[0,170,255],[0,85,255],
+  [0,0,255],[85,0,255],[170,0,255],[255,0,255],
+  [255,0,170],[255,0,85],
+];
+
+// ── Preset Poses ────────────────────────────
+// Normalized [0,1] coordinates for 18 keypoints
+// [x, y, visible(0/1)] — y=0 is top
+const PRESETS = {
+  idle: [
+    { frames: 2, keyframes: [
+      // Frame 0: standing
+      [[0.5,0.18,1],[0.5,0.28,1],[0.42,0.28,1],[0.38,0.38,1],[0.36,0.48,1],[0.58,0.28,1],[0.62,0.38,1],[0.64,0.48,1],[0.45,0.52,1],[0.44,0.68,1],[0.44,0.84,1],[0.55,0.52,1],[0.56,0.68,1],[0.56,0.84,1],[0.47,0.16,1],[0.53,0.16,1],[0.44,0.16,1],[0.56,0.16,1]],
+      // Frame 1: slight sway
+      [[0.5,0.17,1],[0.5,0.28,1],[0.41,0.28,1],[0.37,0.39,1],[0.35,0.49,1],[0.59,0.28,1],[0.63,0.39,1],[0.65,0.49,1],[0.45,0.52,1],[0.44,0.68,1],[0.44,0.84,1],[0.55,0.52,1],[0.56,0.68,1],[0.56,0.84,1],[0.47,0.15,1],[0.53,0.15,1],[0.44,0.15,1],[0.56,0.15,1]],
+    ]},
+  },
+  walk: {
+    frames: 4, keyframes: [
+      // Frame 0: contact (right foot forward)
+      [[0.5,0.18,1],[0.5,0.28,1],[0.44,0.28,1],[0.40,0.38,1],[0.38,0.45,1],[0.56,0.28,1],[0.60,0.38,1],[0.62,0.45,1],[0.46,0.52,1],[0.40,0.66,1],[0.36,0.84,1],[0.54,0.52,1],[0.58,0.66,1],[0.60,0.84,1],[0.47,0.16,1],[0.53,0.16,1],[0.44,0.16,1],[0.56,0.16,1]],
+      // Frame 1: passing (right leg under)
+      [[0.5,0.17,1],[0.5,0.27,1],[0.43,0.28,1],[0.38,0.36,1],[0.35,0.44,1],[0.57,0.28,1],[0.62,0.36,1],[0.65,0.44,1],[0.46,0.52,1],[0.46,0.68,1],[0.46,0.84,1],[0.54,0.52,1],[0.54,0.64,1],[0.54,0.76,1],[0.47,0.15,1],[0.53,0.15,1],[0.44,0.15,1],[0.56,0.15,1]],
+      // Frame 2: contact (left foot forward)
+      [[0.5,0.18,1],[0.5,0.28,1],[0.44,0.28,1],[0.48,0.38,1],[0.50,0.45,1],[0.56,0.28,1],[0.52,0.38,1],[0.50,0.45,1],[0.46,0.52,1],[0.52,0.66,1],[0.56,0.84,1],[0.54,0.52,1],[0.48,0.66,1],[0.44,0.84,1],[0.47,0.16,1],[0.53,0.16,1],[0.44,0.16,1],[0.56,0.16,1]],
+      // Frame 3: passing (left leg under)
+      [[0.5,0.17,1],[0.5,0.27,1],[0.43,0.28,1],[0.46,0.36,1],[0.48,0.44,1],[0.57,0.28,1],[0.54,0.36,1],[0.52,0.44,1],[0.46,0.52,1],[0.46,0.64,1],[0.46,0.76,1],[0.54,0.52,1],[0.54,0.68,1],[0.54,0.84,1],[0.47,0.15,1],[0.53,0.15,1],[0.44,0.15,1],[0.56,0.15,1]],
+    ],
+  },
+  fly: {
+    frames: 4, keyframes: [
+      [[0.5,0.45,1],[0.5,0.52,1],[0.38,0.48,1],[0.28,0.38,1],[0.20,0.30,1],[0.62,0.48,1],[0.72,0.38,1],[0.80,0.30,1],[0.46,0.62,1],[0.44,0.72,1],[0.42,0.80,1],[0.54,0.62,1],[0.56,0.72,1],[0.58,0.80,1],[0.47,0.43,1],[0.53,0.43,1],[0.44,0.44,1],[0.56,0.44,1]],
+      [[0.5,0.45,1],[0.5,0.52,1],[0.38,0.50,1],[0.30,0.45,1],[0.22,0.42,1],[0.62,0.50,1],[0.70,0.45,1],[0.78,0.42,1],[0.46,0.62,1],[0.44,0.72,1],[0.42,0.80,1],[0.54,0.62,1],[0.56,0.72,1],[0.58,0.80,1],[0.47,0.43,1],[0.53,0.43,1],[0.44,0.44,1],[0.56,0.44,1]],
+      [[0.5,0.45,1],[0.5,0.52,1],[0.38,0.52,1],[0.30,0.55,1],[0.22,0.58,1],[0.62,0.52,1],[0.70,0.55,1],[0.78,0.58,1],[0.46,0.62,1],[0.44,0.72,1],[0.42,0.80,1],[0.54,0.62,1],[0.56,0.72,1],[0.58,0.80,1],[0.47,0.43,1],[0.53,0.43,1],[0.44,0.44,1],[0.56,0.44,1]],
+      [[0.5,0.45,1],[0.5,0.52,1],[0.38,0.50,1],[0.30,0.45,1],[0.22,0.42,1],[0.62,0.50,1],[0.70,0.45,1],[0.78,0.42,1],[0.46,0.62,1],[0.44,0.72,1],[0.42,0.80,1],[0.54,0.62,1],[0.56,0.72,1],[0.58,0.80,1],[0.47,0.43,1],[0.53,0.43,1],[0.44,0.44,1],[0.56,0.44,1]],
+    ],
+  },
+  attack: {
+    frames: 3, keyframes: [
+      [[0.5,0.18,1],[0.5,0.28,1],[0.42,0.28,1],[0.36,0.35,1],[0.30,0.28,1],[0.58,0.28,1],[0.64,0.35,1],[0.70,0.28,1],[0.45,0.52,1],[0.44,0.68,1],[0.44,0.84,1],[0.55,0.52,1],[0.56,0.68,1],[0.56,0.84,1],[0.47,0.16,1],[0.53,0.16,1],[0.44,0.16,1],[0.56,0.16,1]],
+      [[0.5,0.20,1],[0.5,0.30,1],[0.42,0.30,1],[0.34,0.26,1],[0.24,0.20,1],[0.58,0.30,1],[0.66,0.26,1],[0.76,0.20,1],[0.45,0.52,1],[0.43,0.66,1],[0.42,0.82,1],[0.55,0.52,1],[0.57,0.66,1],[0.58,0.82,1],[0.47,0.18,1],[0.53,0.18,1],[0.44,0.18,1],[0.56,0.18,1]],
+      [[0.5,0.18,1],[0.5,0.28,1],[0.42,0.28,1],[0.36,0.35,1],[0.30,0.28,1],[0.58,0.28,1],[0.64,0.35,1],[0.70,0.28,1],[0.45,0.52,1],[0.44,0.68,1],[0.44,0.84,1],[0.55,0.52,1],[0.56,0.68,1],[0.56,0.84,1],[0.47,0.16,1],[0.53,0.16,1],[0.44,0.16,1],[0.56,0.16,1]],
+    ],
+  },
+  jump: {
+    frames: 4, keyframes: [
+      [[0.5,0.25,1],[0.5,0.35,1],[0.42,0.33,1],[0.38,0.42,1],[0.36,0.50,1],[0.58,0.33,1],[0.62,0.42,1],[0.64,0.50,1],[0.45,0.52,1],[0.43,0.62,1],[0.42,0.72,1],[0.55,0.52,1],[0.57,0.62,1],[0.58,0.72,1],[0.47,0.23,1],[0.53,0.23,1],[0.44,0.24,1],[0.56,0.24,1]],
+      [[0.5,0.15,1],[0.5,0.25,1],[0.40,0.22,1],[0.34,0.18,1],[0.28,0.14,1],[0.60,0.22,1],[0.66,0.18,1],[0.72,0.14,1],[0.45,0.40,1],[0.42,0.50,1],[0.40,0.56,1],[0.55,0.40,1],[0.58,0.50,1],[0.60,0.56,1],[0.47,0.13,1],[0.53,0.13,1],[0.44,0.14,1],[0.56,0.14,1]],
+      [[0.5,0.20,1],[0.5,0.30,1],[0.42,0.28,1],[0.38,0.22,1],[0.34,0.16,1],[0.58,0.28,1],[0.62,0.22,1],[0.66,0.16,1],[0.45,0.46,1],[0.43,0.58,1],[0.42,0.66,1],[0.55,0.46,1],[0.57,0.58,1],[0.58,0.66,1],[0.47,0.18,1],[0.53,0.18,1],[0.44,0.19,1],[0.56,0.19,1]],
+      [[0.5,0.25,1],[0.5,0.35,1],[0.42,0.33,1],[0.38,0.42,1],[0.36,0.50,1],[0.58,0.33,1],[0.62,0.42,1],[0.64,0.50,1],[0.45,0.52,1],[0.43,0.66,1],[0.42,0.80,1],[0.55,0.52,1],[0.57,0.66,1],[0.58,0.80,1],[0.47,0.23,1],[0.53,0.23,1],[0.44,0.24,1],[0.56,0.24,1]],
+    ],
+  },
+  wave: {
+    frames: 4, keyframes: [
+      [[0.5,0.18,1],[0.5,0.28,1],[0.42,0.28,1],[0.38,0.38,1],[0.36,0.48,1],[0.58,0.28,1],[0.64,0.22,1],[0.68,0.14,1],[0.45,0.52,1],[0.44,0.68,1],[0.44,0.84,1],[0.55,0.52,1],[0.56,0.68,1],[0.56,0.84,1],[0.47,0.16,1],[0.53,0.16,1],[0.44,0.16,1],[0.56,0.16,1]],
+      [[0.5,0.18,1],[0.5,0.28,1],[0.42,0.28,1],[0.38,0.38,1],[0.36,0.48,1],[0.58,0.28,1],[0.66,0.20,1],[0.74,0.16,1],[0.45,0.52,1],[0.44,0.68,1],[0.44,0.84,1],[0.55,0.52,1],[0.56,0.68,1],[0.56,0.84,1],[0.47,0.16,1],[0.53,0.16,1],[0.44,0.16,1],[0.56,0.16,1]],
+      [[0.5,0.18,1],[0.5,0.28,1],[0.42,0.28,1],[0.38,0.38,1],[0.36,0.48,1],[0.58,0.28,1],[0.64,0.22,1],[0.68,0.14,1],[0.45,0.52,1],[0.44,0.68,1],[0.44,0.84,1],[0.55,0.52,1],[0.56,0.68,1],[0.56,0.84,1],[0.47,0.16,1],[0.53,0.16,1],[0.44,0.16,1],[0.56,0.16,1]],
+      [[0.5,0.18,1],[0.5,0.28,1],[0.42,0.28,1],[0.38,0.38,1],[0.36,0.48,1],[0.58,0.28,1],[0.62,0.24,1],[0.60,0.16,1],[0.45,0.52,1],[0.44,0.68,1],[0.44,0.84,1],[0.55,0.52,1],[0.56,0.68,1],[0.56,0.84,1],[0.47,0.16,1],[0.53,0.16,1],[0.44,0.16,1],[0.56,0.16,1]],
+    ],
+  },
+};
+
+// ── State ───────────────────────────────────
+let frames = []; // Array of keypoint arrays (each frame = 18 keypoints)
+let currentFrame = 0;
+let generatedImages = []; // Array of ImageBitmap (null if not generated)
+let referenceImage = null;
+let copiedFrame = null;
+let playing = false;
+let playTimer = null;
+
+const poseCanvas = $('#pose-canvas');
+const poseCtx = poseCanvas.getContext('2d');
+const resultCanvas = $('#result-canvas');
+const resultCtx = resultCanvas.getContext('2d');
+const animCanvas = $('#anim-canvas');
+const animCtx = animCanvas.getContext('2d');
+
+// ── Init ────────────────────────────────────
+function initFromPreset(name) {
+  const preset = PRESETS[name];
+  if (!preset) return;
+  const kf = preset.keyframes || preset.frames; // Handle both formats
+  if (Array.isArray(kf)) {
+    frames = kf.map(f => f.map(k => [...k]));
+  } else {
+    frames = preset.keyframes.map(f => f.map(k => [...k]));
+  }
+  generatedImages = new Array(frames.length).fill(null);
+  currentFrame = 0;
+  $('#st-anim').textContent = name;
+  renderAll();
+}
+
+// ── Draw OpenPose skeleton on canvas ────────
+function drawSkeleton(ctx, keypoints, w, h, options = {}) {
+  const { showJoints = true, lineWidth = 3, jointRadius = 4 } = options;
+  ctx.clearRect(0, 0, w, h);
+
+  // Black background (ControlNet expects this)
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, w, h);
+
+  // Draw limbs
+  for (let i = 0; i < LIMBS.length; i++) {
+    const [a, b] = LIMBS[i];
+    if (!keypoints[a] || !keypoints[b]) continue;
+    if (keypoints[a][2] < 0.5 || keypoints[b][2] < 0.5) continue;
+    const color = LIMB_COLORS[i % LIMB_COLORS.length];
+    ctx.strokeStyle = `rgb(${color[0]},${color[1]},${color[2]})`;
+    ctx.lineWidth = lineWidth;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(keypoints[a][0] * w, keypoints[a][1] * h);
+    ctx.lineTo(keypoints[b][0] * w, keypoints[b][1] * h);
+    ctx.stroke();
+  }
+
+  // Draw joints
+  if (showJoints) {
+    for (let i = 0; i < keypoints.length; i++) {
+      if (!keypoints[i] || keypoints[i][2] < 0.5) continue;
+      const color = JOINT_COLORS[i % JOINT_COLORS.length];
+      ctx.fillStyle = `rgb(${color[0]},${color[1]},${color[2]})`;
+      ctx.beginPath();
+      ctx.arc(keypoints[i][0] * w, keypoints[i][1] * h, jointRadius, 0, Math.PI * 2);
+      ctx.fill();
+      // White outline for visibility
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+  }
+}
+
+// ── Render everything ───────────────────────
+function renderAll() {
+  if (frames.length === 0) return;
+  drawSkeleton(poseCtx, frames[currentFrame], poseCanvas.width, poseCanvas.height);
+
+  // Show generated image if available
+  const genImg = generatedImages[currentFrame];
+  resultCtx.clearRect(0, 0, resultCanvas.width, resultCanvas.height);
+  if (genImg) {
+    resultCtx.imageSmoothingEnabled = false;
+    resultCtx.drawImage(genImg, 0, 0, resultCanvas.width, resultCanvas.height);
+  } else {
+    resultCtx.fillStyle = '#14141f';
+    resultCtx.fillRect(0, 0, resultCanvas.width, resultCanvas.height);
+    resultCtx.fillStyle = '#333';
+    resultCtx.font = '10px JetBrains Mono';
+    resultCtx.textAlign = 'center';
+    resultCtx.fillText('Not generated', resultCanvas.width/2, resultCanvas.height/2);
+  }
+
+  renderTimeline();
+  updateStatus();
+}
+
+function renderTimeline() {
+  const container = $('#timeline-frames');
+  container.innerHTML = '';
+  frames.forEach((kp, i) => {
+    const thumb = document.createElement('div');
+    thumb.className = 'frame-thumb' + (i === currentFrame ? ' active' : '') + (generatedImages[i] ? ' has-gen' : '');
+    const c = document.createElement('canvas');
+    c.width = 48; c.height = 48;
+    drawSkeleton(c.getContext('2d'), kp, 48, 48, { lineWidth: 1, jointRadius: 2, showJoints: false });
+    thumb.appendChild(c);
+    const num = document.createElement('div');
+    num.className = 'frame-num';
+    num.textContent = i + 1;
+    thumb.appendChild(num);
+    thumb.addEventListener('click', () => { currentFrame = i; renderAll(); });
+    container.appendChild(thumb);
+  });
+  $('#frame-num').textContent = currentFrame + 1;
+  $('#frame-total').textContent = frames.length;
+}
+
+function updateStatus() {
+  const genCount = generatedImages.filter(g => g !== null).length;
+  $('#st-frames').textContent = `${genCount}/${frames.length}`;
+}
+
+// ── Joint Dragging ──────────────────────────
+let dragging = -1;
+
+function getJointAt(mx, my) {
+  const kp = frames[currentFrame];
+  const w = poseCanvas.width, h = poseCanvas.height;
+  let closest = -1, closestDist = 15; // 15px grab radius
+  for (let i = 0; i < kp.length; i++) {
+    if (kp[i][2] < 0.5) continue;
+    const dx = kp[i][0] * w - mx;
+    const dy = kp[i][1] * h - my;
+    const d = Math.sqrt(dx*dx + dy*dy);
+    if (d < closestDist) { closestDist = d; closest = i; }
+  }
+  return closest;
+}
+
+poseCanvas.addEventListener('mousedown', e => {
+  const rect = poseCanvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (poseCanvas.width / rect.width);
+  const my = (e.clientY - rect.top) * (poseCanvas.height / rect.height);
+
+  if (e.button === 2) {
+    // Right-click: toggle joint visibility
+    const j = getJointAt(mx, my);
+    if (j >= 0) {
+      frames[currentFrame][j][2] = frames[currentFrame][j][2] > 0.5 ? 0 : 1;
+      renderAll();
+    }
+    return;
+  }
+
+  dragging = getJointAt(mx, my);
+});
+
+poseCanvas.addEventListener('mousemove', e => {
+  if (dragging < 0) return;
+  const rect = poseCanvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (poseCanvas.width / rect.width);
+  const my = (e.clientY - rect.top) * (poseCanvas.height / rect.height);
+  frames[currentFrame][dragging][0] = Math.max(0, Math.min(1, mx / poseCanvas.width));
+  frames[currentFrame][dragging][1] = Math.max(0, Math.min(1, my / poseCanvas.height));
+  drawSkeleton(poseCtx, frames[currentFrame], poseCanvas.width, poseCanvas.height);
+});
+
+poseCanvas.addEventListener('mouseup', () => { dragging = -1; renderAll(); });
+poseCanvas.addEventListener('mouseleave', () => { dragging = -1; });
+poseCanvas.addEventListener('contextmenu', e => e.preventDefault());
+
+// ── Frame Operations ────────────────────────
+$('#btn-add-frame').addEventListener('click', () => {
+  const last = frames[frames.length - 1] || PRESETS.idle.keyframes[0];
+  frames.push(last.map(k => [...k]));
+  generatedImages.push(null);
+  currentFrame = frames.length - 1;
+  renderAll();
+});
+
+$('#btn-del-frame').addEventListener('click', () => {
+  if (frames.length <= 1) return;
+  frames.splice(currentFrame, 1);
+  generatedImages.splice(currentFrame, 1);
+  currentFrame = Math.min(currentFrame, frames.length - 1);
+  renderAll();
+});
+
+$('#btn-copy-frame').addEventListener('click', () => {
+  copiedFrame = frames[currentFrame].map(k => [...k]);
+});
+
+$('#btn-paste-frame').addEventListener('click', () => {
+  if (!copiedFrame) return;
+  frames[currentFrame] = copiedFrame.map(k => [...k]);
+  generatedImages[currentFrame] = null;
+  renderAll();
+});
+
+$('#btn-mirror-frame').addEventListener('click', () => {
+  const kp = frames[currentFrame];
+  // Mirror X coordinates and swap left/right joints
+  const swaps = [[2,5],[3,6],[4,7],[8,11],[9,12],[10,13],[14,15],[16,17]];
+  const mirrored = kp.map(k => [1 - k[0], k[1], k[2]]);
+  for (const [a, b] of swaps) {
+    [mirrored[a], mirrored[b]] = [mirrored[b], mirrored[a]];
+  }
+  frames[currentFrame] = mirrored;
+  generatedImages[currentFrame] = null;
+  renderAll();
+});
+
+$('#btn-tween').addEventListener('click', () => {
+  if (frames.length < 2) return;
+  // Insert a tween frame between current and next
+  const a = frames[currentFrame];
+  const b = frames[(currentFrame + 1) % frames.length];
+  const tweened = a.map((k, i) => [
+    (k[0] + b[i][0]) / 2,
+    (k[1] + b[i][1]) / 2,
+    Math.min(k[2], b[i][2]),
+  ]);
+  frames.splice(currentFrame + 1, 0, tweened);
+  generatedImages.splice(currentFrame + 1, 0, null);
+  currentFrame++;
+  renderAll();
+});
+
+$('#btn-prev-frame').addEventListener('click', () => {
+  currentFrame = (currentFrame - 1 + frames.length) % frames.length;
+  renderAll();
+});
+
+$('#btn-next-frame').addEventListener('click', () => {
+  currentFrame = (currentFrame + 1) % frames.length;
+  renderAll();
+});
+
+// ── Preset buttons ──────────────────────────
+for (const btn of $$('[data-preset]')) {
+  btn.addEventListener('click', () => initFromPreset(btn.dataset.preset));
+}
+
+// ── Playback ────────────────────────────────
+$('#btn-play').addEventListener('click', () => {
+  playing = !playing;
+  $('#btn-play').textContent = playing ? 'STOP' : 'PLAY';
+  $('#btn-play').classList.toggle('btn-active', playing);
+  if (playing) {
+    const fps = parseInt($('#anim-fps').value) || 8;
+    playTimer = setInterval(() => {
+      currentFrame = (currentFrame + 1) % frames.length;
+      renderAll();
+      // Animate preview
+      const img = generatedImages[currentFrame];
+      animCtx.imageSmoothingEnabled = false;
+      animCtx.clearRect(0, 0, 128, 128);
+      if (img) {
+        animCtx.drawImage(img, 0, 0, 128, 128);
+      } else {
+        drawSkeleton(animCtx, frames[currentFrame], 128, 128, { lineWidth: 2, jointRadius: 3 });
+      }
+    }, 1000 / fps);
+  } else {
+    clearInterval(playTimer);
+  }
+});
+
+// ── Generation (placeholder until ControlNet is ready) ──
+$('#btn-gen-ref').addEventListener('click', async () => {
+  const btn = $('#btn-gen-ref');
+  btn.disabled = true; btn.textContent = '...';
+  try {
+    const r = await fetch(`${$('#server-url').value}/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: $('#prompt').value,
+        seed: parseInt($('#seed').value),
+        steps: parseInt($('#steps').value),
+        guidance_scale: 7.5,
+        model: 'pixel',
+        scheduler: 'dpmSolverMultistep',
+      }),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const blob = await r.blob();
+    referenceImage = await createImageBitmap(blob);
+    const refCtx = $('#ref-canvas').getContext('2d');
+    refCtx.imageSmoothingEnabled = false;
+    refCtx.drawImage(referenceImage, 0, 0, 230, 230);
+  } catch (e) {
+    console.error('Ref gen failed:', e);
+  }
+  btn.disabled = false; btn.textContent = 'GENERATE REFERENCE';
+});
+
+// TODO: Wire this to /generate with ControlNet once the model is converted
+$('#btn-gen-all').addEventListener('click', async () => {
+  const btn = $('#btn-gen-all');
+  btn.disabled = true; btn.textContent = 'GENERATING...';
+  // For now: generate each frame with the same prompt+seed but note the pose
+  // This will use ControlNet once available; for now it's just txt2img
+  for (let i = 0; i < frames.length; i++) {
+    try {
+      // Render the pose skeleton to a canvas for the ControlNet input
+      const poseImg = document.createElement('canvas');
+      poseImg.width = 512; poseImg.height = 512;
+      drawSkeleton(poseImg.getContext('2d'), frames[i], 512, 512, { lineWidth: 4, jointRadius: 5 });
+
+      // TODO: Send poseImg as controlnet_input alongside the prompt
+      // For now: just generate with txt2img (all frames will look different)
+      const r = await fetch(`${$('#server-url').value}/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: $('#prompt').value,
+          seed: parseInt($('#seed').value) + i, // Vary seed slightly per frame for now
+          steps: parseInt($('#steps').value),
+          guidance_scale: 7.5,
+          model: 'pixel',
+          scheduler: 'dpmSolverMultistep',
+        }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const blob = await r.blob();
+      generatedImages[i] = await createImageBitmap(blob);
+      renderAll();
+    } catch (e) {
+      console.error(`Frame ${i} failed:`, e);
+    }
+  }
+  btn.disabled = false; btn.textContent = 'GENERATE ALL';
+});
+
+// ── Export sprite sheet ─────────────────────
+$('#btn-export').addEventListener('click', () => {
+  const validFrames = generatedImages.filter(g => g !== null);
+  if (validFrames.length === 0) return;
+  const fw = validFrames[0].width, fh = validFrames[0].height;
+  const cols = validFrames.length;
+  const sheet = document.createElement('canvas');
+  sheet.width = fw * cols; sheet.height = fh;
+  const sheetCtx = sheet.getContext('2d');
+  validFrames.forEach((img, i) => sheetCtx.drawImage(img, i * fw, 0));
+  const a = document.createElement('a');
+  a.href = sheet.toDataURL('image/png');
+  a.download = `spritesheet-${$('#st-anim').textContent}-${Date.now()}.png`;
+  a.click();
+});
+
+// ── Server check ────────────────────────────
+async function checkServer() {
+  try {
+    const r = await fetch(`${$('#server-url').value}/health`, { signal: AbortSignal.timeout(2000) });
+    if (r.ok) { const d = await r.json(); $('#st-server').textContent = d.model; $('#st-server').className = 'ok'; return; }
+  } catch {}
+  $('#st-server').textContent = 'OFFLINE'; $('#st-server').className = 'val';
+}
+
+// ── Keyboard shortcuts ──────────────────────
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.key === 'ArrowLeft') { e.preventDefault(); $('#btn-prev-frame').click(); }
+  if (e.key === 'ArrowRight') { e.preventDefault(); $('#btn-next-frame').click(); }
+  if (e.key === ' ') { e.preventDefault(); $('#btn-play').click(); }
+  if (e.key === 'm') { $('#btn-mirror-frame').click(); }
+  if (e.key === 't') { $('#btn-tween').click(); }
+});
+
+// ── Boot ────────────────────────────────────
+initFromPreset('idle');
+checkServer();
+</script>
+</body>
+</html>
